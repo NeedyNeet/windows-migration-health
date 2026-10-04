@@ -24,40 +24,60 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
+# 仓库根：先把脚本目录与仓库根解析出来（-BackupDir 显式给出时也要能定位 local\ 配置）
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot  = Split-Path -Parent $ScriptDir
+if (-not (Test-Path (Join-Path $RepoRoot 'scripts'))) { $RepoRoot = $ScriptDir }
+
 # 备份位置：默认写到"仓库根/local/rollback"（与 health-fix 一致，且该目录已被 .gitignore 排除）。
 # 单独把这个脚本放到别处时，退化为脚本同目录下的 local\rollback。
 if (-not $BackupDir) {
-    $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-    $RepoRoot  = Split-Path -Parent $ScriptDir
-    if (-not (Test-Path (Join-Path $RepoRoot 'scripts'))) { $RepoRoot = $ScriptDir }
     $BackupDir = Join-Path $RepoRoot 'local\rollback'
 }
 
-# ---------------------------------------------------------------- path mapping
-# Old (registered) path prefix -> real current path. Longest prefix wins.
-# NOTE: <旧用户名> is a PLACEHOLDER for the pre-rename profile folder name - replace it with yours.
-$pathMap = [ordered]@{
-    # specific entries first: the first matching prefix rewrites the text, so a longer,
-    # more precise prefix must win over a shorter one (quark keeps its resources inside
-    # a versioned app-<version> folder, so its icon/asset paths need this entry)
-    'C:\Program Files (x86)\quark-cloud-drive\resources' = 'D:\Apps\Installed\quark-cloud-drive\app-3.19.0\resources'
-    'C:\Users\<旧用户名>\AppData\Local\Programs\Notion' = 'D:\Apps\Installed\Notion'
-    'C:\Users\<旧用户名>\AppData\Local\Programs\Xmind'  = 'D:\Apps\Installed\Xmind'
-    'C:\Program Files (x86)\NetEase\CloudMusic'     = 'D:\Apps\Installed\NetEase\CloudMusic'
-    'C:\Program Files (x86)\quark-cloud-drive'      = 'D:\Apps\Installed\quark-cloud-drive'
-    'D:\Apps\Portable\BCompare-zh-5.0.1.29877'      = 'D:\Apps\Portable\BCompare-zh'
-    'D:\BCompare-zh-5.0.1.29877'                    = 'D:\Apps\Portable\BCompare-zh'
-    'D:\IntelliJ IDEA 2024.2.2'                     = 'D:\Apps\JetBrains\IntelliJ IDEA 2024.2.2'
-    'D:\JetBrains\'                                 = 'D:\Apps\JetBrains\'
-    'D:\mpv-lazy'                                   = 'D:\Apps\Portable\mpv-lazy'
+# 机器专属映射：不写死在本文件里；真值放在 local\repair-migrated-apps.local.psd1
+$script:CfgPath = Join-Path $RepoRoot 'local\repair-migrated-apps.local.psd1'
+$script:Cfg = $null
+if (Test-Path -LiteralPath $script:CfgPath) {
+    # Import-PowerShellDataFile 只读数据、不执行代码，5.1 与 7.x 都可用
+    $script:Cfg = Import-PowerShellDataFile -LiteralPath $script:CfgPath
+} else {
+    Write-Output ("note: {0} not found - only the built-in generic mappings are used." -f $script:CfgPath)
 }
 
-# The Windows profile folder was renamed too (C:\Users\<旧用户名> -> C:\Users\<user>).
+# ---------------------------------------------------------------- path mapping
+# Old (registered) path prefix -> real current path.
+# 下面这批是**通用/非个人**的映射（旧安装位置 -> D:\Apps 布局），作为开箱可用的默认值。
+# 含个人信息的映射（旧用户目录名等）不在这里，改从 local\repair-migrated-apps.local.psd1 读，
+# 且本机条目优先。键名与写法见 config\repair-migrated-apps.local.example.psd1。
+#
+# 用「数组 + Old/New」而不是哈希表：映射是**顺序敏感**的——
+# 更具体的前缀必须排在更短的前面前面（quark 的资源在带版本号的 app-<version>
+# 子目录里，所以它那条必须优先于通用的 quark-cloud-drive 那条）。
+$pathMapBase = @(
+    @{ Old = 'C:\Program Files (x86)\quark-cloud-drive\resources'; New = 'D:\Apps\Installed\quark-cloud-drive\app-3.19.0\resources' },
+    @{ Old = 'C:\Program Files (x86)\NetEase\CloudMusic';          New = 'D:\Apps\Installed\NetEase\CloudMusic' },
+    @{ Old = 'C:\Program Files (x86)\quark-cloud-drive';           New = 'D:\Apps\Installed\quark-cloud-drive' },
+    @{ Old = 'D:\Apps\Portable\BCompare-zh-5.0.1.29877';           New = 'D:\Apps\Portable\BCompare-zh' },
+    @{ Old = 'D:\BCompare-zh-5.0.1.29877';                         New = 'D:\Apps\Portable\BCompare-zh' },
+    @{ Old = 'D:\IntelliJ IDEA 2024.2.2';                          New = 'D:\Apps\JetBrains\IntelliJ IDEA 2024.2.2' },
+    @{ Old = 'D:\JetBrains\';                                      New = 'D:\Apps\JetBrains\' },
+    @{ Old = 'D:\mpv-lazy';                                        New = 'D:\Apps\Portable\mpv-lazy' }
+)
+$localPathMap = if ($script:Cfg -and $script:Cfg.PathMap) { @($script:Cfg.PathMap) } else { @() }
+$pathMap = [ordered]@{}
+foreach ($e in ($localPathMap + $pathMapBase)) {                  # 本机条目在前（更具体）
+    if ($e -and $e.Old -and -not $pathMap.Contains([string]$e.Old)) { $pathMap[[string]$e.Old] = [string]$e.New }
+}
+
+# The Windows profile folder was renamed too (e.g. C:\Users\<old-name> -> C:\Users\<user>).
 # Only applied inside HKCU\Software\Classes (URL handlers etc.), never to uninstall
 # records: rewriting a dead install path to another dead profile path helps nobody.
-$profileMap = [ordered]@{
-    'C:\Users\<旧用户名>\' = "$env:USERPROFILE\"
-    'C:\Users\<旧用户名>'  = $env:USERPROFILE
+# 这两个映射同样是机器专属，来自 local\repair-migrated-apps.local.psd1 的 ProfileMap。
+$localProfileMap = if ($script:Cfg -and $script:Cfg.ProfileMap) { @($script:Cfg.ProfileMap) } else { @() }
+$profileMap = [ordered]@{}
+foreach ($e in $localProfileMap) {
+    if ($e -and $e.Old) { $profileMap[[string]$e.Old] = [string]$e.New }
 }
 
 function Convert-MappedPath {
