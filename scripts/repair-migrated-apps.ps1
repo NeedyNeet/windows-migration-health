@@ -140,6 +140,10 @@ function Convert-MappedPath {
 # ---------------------------------------------------------------- registry work
 $script:pendingEdits = @()
 $script:backedUp    = @()
+# 备份记忆与"每次运行一个子目录"的时间戳：与 health-fix.ps1 同一契约（见那里的注释）。
+$script:RunStamp    = Get-Date -Format 'yyyyMMdd-HHmmss'
+$script:backupTried = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+$script:backupOk    = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $script:skipped     = @()
 
 function Repair-KeyTree {
@@ -185,18 +189,39 @@ function Repair-KeyTree {
     }
 }
 
+# 返回 $true = 可以安全改动（试运行恒为 $true）；$false = **备份失败，调用方必须放弃这次改动**。
+# 这个契约与 health-fix.ps1 的同名函数一致。原来这里只 export、既不校验退出码也不返回值，
+# 于是"备份失败"会静默地变成"没有备份也照样改" —— 而本项目的承诺是"改前必备份"，
+# 那条承诺只有在备份真失败的那一刻才有意义。
+# （注意：本函数有返回值，所以失败信息由**调用方**打印。在返回值的函数里 Write-Output/ Say
+#   会把文本算进返回值 —— health-fix 那边正是这样踩过一次，见 tests\lint.tests.ps1 规则 4。）
 function Backup-Key {
     param([string]$Key)
-    if ($script:backedUp -contains $Key) { return }
-    $script:backedUp += $Key
-    if (-not $Apply) { return }
+    if (-not $Apply) { return $true }
+    if ($script:backupOk.Contains($Key)) { return $true }
+    if ($script:backupTried.Contains($Key)) { return $false }   # 试过且没成功：不再重试，直接放弃
+    [void]$script:backupTried.Add($Key)
     $regPath = $Key -replace '^HKLM:', 'HKLM' -replace '^HKCU:', 'HKCU'
     $safe = ($regPath -replace '[\\:*?"<>|]', '_')
-    $file = Join-Path $BackupDir ("$safe.reg")
-    if (-not (Test-Path -LiteralPath $BackupDir)) {
-        New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+    # 每次运行一个子目录：第二次跑 -Apply 时，绝不会用"已改过的状态"覆盖第一次的原始备份。
+    $dir = Join-Path $BackupDir $script:RunStamp
+    if (-not (Test-Exists $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
+    $file = Join-Path $dir ("$safe.reg")
     & reg.exe export $regPath $file /y | Out-Null
+    $code = $LASTEXITCODE
+    # 校验导出结果：退出码 + 文件真的在 + 内容够长（半截文件不算备份）。
+    # 用 Test-Exists 而不是裸 Test-Path：约定 10 要求"读不到"不能当成"不存在"。
+    # 而备份文件读不到时，这里按"没有可用备份"处理 —— 宁可跳过这次改动。
+    $ok = $false
+    if ($code -eq 0 -and (Test-Exists $file)) {
+        try { $ok = (Get-Item -LiteralPath $file).Length -ge 64 } catch { $ok = $false }
+    }
+    if (-not $ok) { return $false }
+    [void]$script:backupOk.Add($Key)
+    $script:backedUp += $Key
+    return $true
 }
 
 # 写入一个值，并**回读校验**，返回 'ok' 或 'FAILED'。
@@ -358,7 +383,11 @@ if ($script:pendingEdits.Count -eq 0) {
         if (-not $label) { $label = '(default)' }
         Write-Output ("{0}`n    [{1}]`n    - {2}`n    + {3}" -f $e.Key, $label, $e.Old, $e.New)
         if ($Apply) {
-            Backup-Key -Key $e.Key
+            if (-not (Backup-Key -Key $e.Key)) {
+                # 宁可这次改不了，也不能改了却回不去。reg export 自己的报错就在上面。
+                Write-Output '    -> skipped: backup failed (this key was NOT modified)'
+                continue
+            }
             $state = Set-ValueChecked -Key $e.Key -Name $e.Name -New $e.New
             Write-Output ("    -> write {0}" -f $state)
         }
@@ -367,7 +396,7 @@ if ($script:pendingEdits.Count -eq 0) {
 
 if ($Apply -and $script:backedUp.Count -gt 0) {
     Write-Output ''
-    Write-Output ("backups: {0} key(s) exported to {1}" -f $script:backedUp.Count, $BackupDir)
+    Write-Output ("backups: {0} key(s) exported to {1}" -f $script:backedUp.Count, (Join-Path $BackupDir $script:RunStamp))
 }
 
 if ($script:skipped.Count -gt 0) {

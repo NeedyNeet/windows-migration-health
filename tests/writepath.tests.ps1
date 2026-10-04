@@ -30,8 +30,8 @@ function Assert-Sandbox([string]$psPath) {
 }
 
 $sandbox   = 'HKCU:\Software\_wmh_selftest_' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-$backupDir = Join-Path ([IO.Path]::GetTempPath()) ('wmh-writepath-' + [guid]::NewGuid().ToString('N'))
-$null = New-Item -ItemType Directory -Path $backupDir -Force
+$tmpRoot = Join-Path ([IO.Path]::GetTempPath()) ('wmh-writepath-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $tmpRoot -Force
 New-Item -Path $sandbox -Force | Out-Null
 Assert-Sandbox $sandbox
 
@@ -51,8 +51,8 @@ foreach ($fn in 'Say', 'Open-RegKey', 'Get-RegValue', 'Backup-Key', 'Fix-Acl', '
 
 # 这些是脚本顶部的运行期状态。测试自己提供它们 —— AST 抽取不会带上依赖（见 Extract-Function.ps1）。
 $Apply    = $false
-$rollback = Join-Path $backupDir 'rollback'
-$log      = Join-Path $backupDir 'fix-log.txt'
+$rollback = Join-Path $tmpRoot 'rollback'
+$log      = Join-Path $tmpRoot 'fix-log.txt'
 # 照抄被测脚本的写法：5.1 的 Add-Content -Encoding 只接受枚举/字符串，
 # 传 Text.UTF8Encoding 对象在 5.1 下会直接抛参数绑定错误（我第一次就猜错了）。
 $script:Enc         = if ($PSVersionTable.PSVersion.Major -ge 7) { 'utf8BOM' } else { 'UTF8' }
@@ -77,7 +77,7 @@ Test-Case '安全底线：守卫真的会拒绝试验田之外的路径' {
 
 Test-Case 'health-fix：试运行下 Backup-Key 恒返回 $true，且不产出任何备份文件' {
     $k = "$sandbox\dry"; New-Item -Path $k -Force | Out-Null
-    Reset-BackupState (Join-Path $backupDir 'dry')
+    Reset-BackupState (Join-Path $tmpRoot 'dry')
     $Apply = $false
     Assert-True (Backup-Key $k) '试运行下应返回 $true（调用方据此继续）'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $script:rollback $script:RunStamp))) '试运行不该创建备份目录'
@@ -86,7 +86,7 @@ Test-Case 'health-fix：试运行下 Backup-Key 恒返回 $true，且不产出�
 Test-Case 'health-fix：-Apply 下 Backup-Key 真的导出 .reg（且内容够长）' {
     $k = "$sandbox\bk"; New-Item -Path $k -Force | Out-Null
     Set-ItemProperty -LiteralPath $k -Name 'V' -Value 'backup-me'
-    Reset-BackupState (Join-Path $backupDir 'bk')
+    Reset-BackupState (Join-Path $tmpRoot 'bk')
     $Apply = $true
     Assert-True (Backup-Key $k) '备份应当成功'
     $dir = Join-Path $script:rollback $script:RunStamp
@@ -99,7 +99,7 @@ Test-Case 'health-fix：-Apply 下 Backup-Key 真的导出 .reg（且内容够�
 Test-Case 'health-fix：备份失败时 Backup-Key 返回**单个** $false（返回值不能被日志污染）' {
     $k = "$sandbox\bkfail"; New-Item -Path $k -Force | Out-Null
     # 把备份目录指向一个"父级是文件"的路径 —— 目录创建必然失败，于是 reg export 也必然失败
-    $blocker = Join-Path $backupDir 'blocker'
+    $blocker = Join-Path $tmpRoot 'blocker'
     Set-Content -LiteralPath $blocker -Value 'x'
     Reset-BackupState (Join-Path $blocker 'sub')
     $Apply = $true
@@ -115,7 +115,7 @@ Test-Case 'health-fix：备份失败时 Backup-Key 返回**单个** $false（返
 
 Test-Case 'health-fix：备份成功时 Backup-Key 也只返回一个 $true' {
     $k = "$sandbox\bkok"; New-Item -Path $k -Force | Out-Null
-    Reset-BackupState (Join-Path $backupDir 'bkok')
+    Reset-BackupState (Join-Path $tmpRoot 'bkok')
     $Apply = $true
     $r = Backup-Key $k
     Assert-Equal @($r).Count 1 ("成功路径也应只返回 1 个元素，实际 {0}" -f @($r).Count)
@@ -125,7 +125,7 @@ Test-Case 'health-fix：备份成功时 Backup-Key 也只返回一个 $true' {
 Test-Case 'health-fix：备份失败时 Del-Value 跳过删除，并计入"跳过"' {
     $k = "$sandbox\dvskip"; New-Item -Path $k -Force | Out-Null
     Set-ItemProperty -LiteralPath $k -Name 'V' -Value 'must-survive'
-    $blocker = Join-Path $backupDir 'blocker'
+    $blocker = Join-Path $tmpRoot 'blocker'
     Reset-BackupState (Join-Path $blocker 'sub')
     $Apply = $true
     $before = $script:stat['跳过']
@@ -137,7 +137,7 @@ Test-Case 'health-fix：备份失败时 Del-Value 跳过删除，并计入"跳�
 Test-Case 'health-fix：-Apply 下 Set-Text 真的改写，且回读得到新值' {
     $k = "$sandbox\st"; New-Item -Path $k -Force | Out-Null
     Set-ItemProperty -LiteralPath $k -Name 'P' -Value 'C:\old\x.exe'
-    Reset-BackupState (Join-Path $backupDir 'st')
+    Reset-BackupState (Join-Path $tmpRoot 'st')
     $Apply = $true
     Set-Text $k 'P' 'C:\old' 'C:\new' 'test'
     Assert-Equal (Get-RegValue $k 'P') 'C:\new\x.exe' '写入后回读应当是新值'
@@ -146,7 +146,7 @@ Test-Case 'health-fix：-Apply 下 Set-Text 真的改写，且回读得到新值
 Test-Case 'health-fix：试运行下 Set-Text 一个字都不改（这是最重要的安全属性）' {
     $k = "$sandbox\stdry"; New-Item -Path $k -Force | Out-Null
     Set-ItemProperty -LiteralPath $k -Name 'P' -Value 'C:\old\x.exe'
-    Reset-BackupState (Join-Path $backupDir 'stdry')
+    Reset-BackupState (Join-Path $tmpRoot 'stdry')
     $Apply = $false
     Set-Text $k 'P' 'C:\old' 'C:\SHOULD-NOT-APPEAR' 'dry'
     Assert-Equal (Get-RegValue $k 'P') 'C:\old\x.exe' '试运行改动了注册表 —— 这是不可接受的'
@@ -155,7 +155,7 @@ Test-Case 'health-fix：试运行下 Set-Text 一个字都不改（这是最重�
 Test-Case 'health-fix：-Apply 下 Del-Key 真的把键删掉' {
     $k = "$sandbox\dk"; New-Item -Path $k -Force | Out-Null
     Set-ItemProperty -LiteralPath $k -Name 'V' -Value 'x'
-    Reset-BackupState (Join-Path $backupDir 'dk')
+    Reset-BackupState (Join-Path $tmpRoot 'dk')
     $Apply = $true
     Del-Key $k 'test'
     Assert-True (-not (Test-Path -LiteralPath $k)) '应当已删除该键'
@@ -168,20 +168,82 @@ Test-Case 'health-fix：-Apply 下 Del-Key 真的把键删掉' {
 #  所以 health-fix 的用例必须全部跑在上面。
 # ---------------------------------------------------------------------------
 $repSrc = Join-Path $repo 'scripts\repair-migrated-apps.ps1'
-foreach ($fn in 'Backup-Key', 'Set-ValueChecked') {
+foreach ($fn in 'Test-Exists', 'Backup-Key', 'Set-ValueChecked') {   # Test-Exists 是 Backup-Key 的依赖
     Invoke-Expression (Get-ScriptFunctionText -Path $repSrc -Name $fn)
 }
 
-Test-Case 'repair：-Apply 下 Backup-Key 真的产出 .reg' {
+# repair 的 Backup-Key 依赖这几个脚本级状态，由测试提供（AST 抽取不带依赖）
+function Reset-RepairBackupState([string]$dir, [string]$stamp) {
+    $script:BackupDir   = $dir
+    $script:RunStamp    = $stamp
+    $script:backedUp    = @()
+    $script:backupTried = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $script:backupOk    = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+}
+
+Test-Case 'repair：-Apply 下 Backup-Key 真的产出 .reg，并只返回一个 $true' {
     $k = "$sandbox\repbk"; New-Item -Path $k -Force | Out-Null
     Set-ItemProperty -LiteralPath $k -Name 'V' -Value 'x'
-    $script:backedUp = @()
+    Reset-RepairBackupState (Join-Path $tmpRoot 'repbk') 'run1'
     $Apply = $true
-    $BackupDir = Join-Path $backupDir 'repbk'
-    Backup-Key -Key $k
-    $regs = @(Get-ChildItem -LiteralPath $BackupDir -File -ErrorAction SilentlyContinue)
-    Assert-True ($regs.Count -eq 1) ("应当产出 1 个备份文件，实际 {0}" -f $regs.Count)
-    Assert-True ($regs[0].Length -gt 0) '备份文件不该是空的'
+    $r = Backup-Key -Key $k
+    Assert-Equal @($r).Count 1 ("返回值应恰好 1 个元素，实际 {0}" -f @($r).Count)
+    Assert-True ($r -eq $true) '成功路径应返回 $true'
+    $dir = Join-Path $script:BackupDir 'run1'
+    $regs = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue)
+    Assert-Equal $regs.Count 1 ("应当产出 1 个备份文件，实际 {0}" -f $regs.Count)
+    Assert-True ($regs[0].Length -ge 64) '备份文件太小，不是有效导出'
+}
+
+Test-Case 'repair：备份失败时返回单个 $false（原来它会"没有备份也照改"）' {
+    $k = "$sandbox\repfail"; New-Item -Path $k -Force | Out-Null
+    Set-ItemProperty -LiteralPath $k -Name 'V' -Value 'x'
+    $blocker = Join-Path $tmpRoot 'repblocker'
+    Set-Content -LiteralPath $blocker -Value 'x'
+    Reset-RepairBackupState (Join-Path $blocker 'sub') 'run1'
+    $Apply = $true
+    $r = Backup-Key -Key $k
+    Assert-Equal @($r).Count 1 ("返回值应恰好 1 个元素，实际 {0}" -f @($r).Count)
+    Assert-True ($r -is [bool]) '返回值应是布尔'
+    Assert-True (-not $r) '备份不可能成功时必须返回 $false'
+}
+
+Test-Case 'repair：试运行下返回 $true 且不产出任何备份文件' {
+    $k = "$sandbox\repdry"; New-Item -Path $k -Force | Out-Null
+    Reset-RepairBackupState (Join-Path $tmpRoot 'repdry') 'run1'
+    $Apply = $false
+    $r = Backup-Key -Key $k
+    Assert-Equal @($r).Count 1 '返回值应恰好 1 个元素'
+    Assert-True ($r -eq $true) '试运行应返回 $true（调用方据此继续）'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $script:BackupDir 'run1'))) '试运行不该产出备份'
+}
+
+Test-Case 'repair：第二次运行不会覆盖第一次的原始备份（每次运行一个子目录）' {
+    $k = "$sandbox\reptwice"; New-Item -Path $k -Force | Out-Null
+    Set-ItemProperty -LiteralPath $k -Name 'V' -Value 'ORIGINAL'
+    Reset-RepairBackupState (Join-Path $tmpRoot 'reptwice') 'run1'
+    $Apply = $true
+    $r1 = Backup-Key -Key $k
+    Assert-True ($r1 -eq $true) ("第一次备份应成功；实际返回 [{0}]，类型 [{1}]，子目录存在={2}，BackupDir=[{3}]" -f ($r1 -join '|'), ((@($r1) | ForEach-Object { $_.GetType().Name }) -join ','), (Test-Path -LiteralPath (Join-Path $script:BackupDir 'run1')), $script:BackupDir)
+    Set-ItemProperty -LiteralPath $k -Name 'V' -Value 'CHANGED'
+    Reset-RepairBackupState (Join-Path $tmpRoot 'reptwice') 'run2'
+    $r2 = Backup-Key -Key $k
+    Assert-True ($r2 -eq $true) ("第二次备份应成功；实际返回 [{0}]" -f ($r2 -join '|'))
+    $d1 = Join-Path $script:BackupDir 'run1'
+    $d2 = Join-Path $script:BackupDir 'run2'
+    Assert-True (Test-Path -LiteralPath $d1) '第一次的备份不见了 —— 被第二次覆盖'
+    Assert-True (Test-Path -LiteralPath $d2) '第二次的备份应当另存'
+    $f1 = @(Get-ChildItem -LiteralPath $d1 -File)[0]
+    $f2 = @(Get-ChildItem -LiteralPath $d2 -File)[0]
+    Assert-True ((Get-Content -LiteralPath $f1.FullName -Raw) -ne (Get-Content -LiteralPath $f2.FullName -Raw)) '两次备份内容相同 —— 说明原始状态已被覆盖'
+}
+
+Test-Case 'repair：主流程确实用上了返回值（备份失败就 continue）' {
+    # 这是一条**接线断言**（源码级）：那段逻辑内联在主流程里，无法在不真改注册表的前提下调用。
+    # Backup-Key 本身的行为上面已经真跑过，这里只钉住"调用方确实检查了返回值并跳过"。
+    $src = [IO.File]::ReadAllText($repSrc, [Text.Encoding]::UTF8)
+    Assert-Match $src 'if \(-not \(Backup-Key -Key \$e\.Key\)\)' '调用方没有检查 Backup-Key 的返回值'
+    Assert-Match $src '(?s)if \(-not \(Backup-Key -Key \$e\.Key\)\) \{.*?continue' '检查了却没有跳过（缺 continue）'
 }
 
 Test-Case 'repair：Set-ValueChecked 正常路径返回 ok，且值真的写进去了' {
@@ -210,7 +272,7 @@ Test-Case 'repair：Set-ValueChecked 也支持空值名（该键的 (Default) �
 # ---------------------------------------------------------------------------
 Test-Case '收尾：试验田与临时目录都被清掉，且没有留下任何 _wmh_selftest_* 残留' {
     Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
     Assert-True (-not (Test-Path -LiteralPath $sandbox)) '试验田没有清干净'
     $left = @(Get-ChildItem 'HKCU:\Software' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like '_wmh_selftest_*' })
     Assert-True ($left.Count -eq 0) ("残留了 {0} 个试验田键：{1}" -f $left.Count, (($left | ForEach-Object { $_.PSChildName }) -join ', '))

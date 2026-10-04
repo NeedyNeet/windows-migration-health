@@ -123,6 +123,37 @@ function Find-SayPollutingReturn {
     }
     return $out
 }
+# 规则 5：`$script:X` 与文件级变量**仅大小写不同** —— PowerShell 变量名不区分大小写，
+# 所以 `$backupDir`（文件级）与 `$script:BackupDir`（函数里）是**同一个变量**。
+# 实测事故：测试给自己用的临时根目录起名 $backupDir，而被测脚本的同名变量是 $BackupDir，
+# 于是每个用例把根目录覆盖成上一个用例的子目录，路径一层层嵌套，备份"失败"——
+# 全程不报错，只是行为变了。这种覆盖必须由机器来拦。
+function Find-ScopeCasingClash {
+    param([string]$Path)
+    $out = @()
+    if (-not (Test-Path -LiteralPath $Path)) { return $out }
+    $tokens = $null; $errs = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errs)
+    if ($errs -and @($errs).Count -gt 0) { return $out }
+    $fileVars = @{}
+    foreach ($v in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
+        $name = $v.VariablePath.UserPath
+        if ($name -match ':') { continue }
+        $p = $v.Parent; $inFn = $false
+        while ($p) { if ($p -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $inFn = $true; break }; $p = $p.Parent }
+        if ($inFn) { continue }
+        if (-not $fileVars.ContainsKey($name.ToLower())) { $fileVars[$name.ToLower()] = $name }
+    }
+    foreach ($v in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
+        $name = $v.VariablePath.UserPath
+        if ($name -notmatch '^script:(.+)$') { continue }
+        $bare = $Matches[1]
+        if ($fileVars.ContainsKey($bare.ToLower()) -and $fileVars[$bare.ToLower()] -cne $bare) {
+            $out += [pscustomobject]@{ Line = $v.Extent.StartLineNumber; FileVar = $fileVars[$bare.ToLower()]; Scoped = $name }
+        }
+    }
+    return $out
+}
 Test-Case '规则自测：三条规则都能抓到已知违规，也不误报' {
     # 每条断言都把**实测数目**写进消息：这个文件自己就是检查器，检查器出问题时，
     # 失败信息必须能直接告诉我"抓到了几处"，否则调试它又得靠猜。
@@ -162,6 +193,20 @@ Test-Case '规则自测：三条规则都能抓到已知违规，也不误报' {
         Assert-Equal $hits.Count 1 ("应当只抓到 Bad 一处，实际 {0}（{1}）" -f $hits.Count, (($hits | ForEach-Object { $_.Func }) -join ','))
         Assert-Equal $hits[0].Func 'Bad' '抓到的应当是 Bad'
     } finally { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
+    # 规则 5 也需要真实文件
+    $probe2 = Join-Path ([IO.Path]::GetTempPath()) ('wmh-lint5-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        $fixture2 = @(
+            '$backupDir = ''file-scope'''
+            'function F { $script:BackupDir = ''clash'' }'
+            'function G { $script:backupDir = ''same-casing-ok'' }'
+            'function H { $script:RunThing = ''no-file-scope-counterpart'' }'
+        )
+        Set-Content -LiteralPath $probe2 -Encoding ascii -Value $fixture2
+        $hits2 = @(Find-ScopeCasingClash $probe2)
+        Assert-Equal $hits2.Count 1 ("规则 5 应当只抓到 1 处，实际 {0}" -f $hits2.Count)
+        Assert-Equal $hits2[0].FileVar 'backupDir' '抓到的应当是 $backupDir 与 $script:BackupDir 的撞车'
+    } finally { Remove-Item -LiteralPath $probe2 -Force -ErrorAction SilentlyContinue }
 }
 Test-Case '硬性约定 3：没有按 .NET 异常类型 catch 的地方' {
     $bad = @()
@@ -191,6 +236,14 @@ Test-Case '日志函数 Say 的输出不会污染有值返回的函数（实测�
     $bad = @()
     foreach ($f in Get-LintTargets) {
         $bad += @(Find-SayPollutingReturn $f.FullName | ForEach-Object { "{0}:{1}  在函数 {2} 里裸写 Say" -f $f.Name, $_.Line, $_.Func })
+    }
+    Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
+}
+
+Test-Case '硬性约定 14：没有"仅大小写不同"的变量名撞车（PowerShell 变量名不区分大小写）' {
+    $bad = @()
+    foreach ($f in Get-LintTargets) {
+        $bad += @(Find-ScopeCasingClash $f.FullName | ForEach-Object { "{0}:{1}  ${2} 与 {3} 是同一个变量" -f $f.Name, $_.Line, $_.FileVar, $_.Scoped })
     }
     Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
 }
