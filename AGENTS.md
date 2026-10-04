@@ -83,6 +83,7 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
 .\tests\run-tests.cmd               # 或 .\tests\run-tests.ps1 [-Engine pwsh|powershell] [-Test encoding]
                                     # 在每个可用引擎下各跑一遍 tests\*.tests.ps1；退出码 0=全通过
 .\scripts\dev\fix-encoding.ps1 -Apply   # 测试若报"缺 BOM / 行尾不对"：用它修（默认试运行）
+.\scripts\dev\install-hooks.ps1         # 启用 pre-commit 钩子（每个 clone 各做一次；只拦不改）
 
 .\scripts\health-check.cmd          # 只读体检（报告进 local\reports）
 .\scripts\health-fix.cmd            # 清理试运行

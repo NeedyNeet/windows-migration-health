@@ -102,6 +102,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 | [versions/README.md](versions/README.md) | 版本档案：`v1-ps5.1`（旧）/ `v2-ps7.6`（当前）+ 双引擎验收证据 |
 | [config/](config/) | 配置模板：`health-check.needles.example.txt`（旧路径清单，复制到 `scripts\health-check.needles.txt`）、`*.local.example.psd1`（机器专属映射，复制到 `local/` 后填真值） |
 | [tests/](tests/) | **零依赖测试套件**：语法、编码卫生、删除门禁、映射顺序；`tests\run-tests.cmd` 会在 5.1 与 7.x 下各跑一遍 |
+| [.githooks/](.githooks/) | **pre-commit 钩子**：提交前跑编码/行尾检查；用 `scripts\dev\install-hooks.ps1` 启用 |
 | `local/` | **个人产物，已 gitignore**：机器专属配置（`*.local.psd1`）、注册表备份、体检报告、日志（见 [local/README.md](local/README.md)） |
 
 ## 隐私与个人数据（重要）
@@ -121,6 +122,29 @@ Windows 11 x64 · **PowerShell 7.6.6 (Core)** + Windows PowerShell 5.1.26100 双
 本仓库的 `AGENTS.md` 由本机的新项目起步模板生成：它的**上半部分是本机私有**的约定（这台机器上
 装了 Everything / WizTree / Beyond Compare / 浏览器自动化，供 AI 代理做探索与交叉验证），
 下半部分才是本仓库的项目约定。只想用脚本的话，上半部分可以完全忽略。
+
+## 开发与提交约定
+
+```powershell
+.\tests\run-tests.cmd                          # 全部测试（双引擎）；慢速集成测试默认跳过
+$env:DSH_TESTS_SLOW=1; .\tests\run-tests.cmd   # 连"真跑一次体检"的集成测试一起跑
+.\scripts\dev\fix-encoding.ps1                 # 试运行：看哪些文件的编码/行尾不合规
+.\scripts\dev\fix-encoding.ps1 -Apply          # 补 BOM、统一 .cmd 行尾
+.\scripts\dev\install-hooks.ps1                # 启用 pre-commit 钩子（每个 clone 各做一次）
+```
+
+三条硬约定（都来自真踩过的坑，`tests\` 与 CI 会拦）：
+
+1. **`.ps1` / `.psd1` 必须 UTF-8 带 BOM**。Windows PowerShell 5.1 读无 BOM 的文件会按 ANSI 解码 →
+   中文注释全乱码 → 报出上百个**假**语法错误；而 pwsh 7 完全正常，所以这个坑**只在 5.1 暴露**。
+   麻烦在于：多数文本工具（编辑器、批量替换、AI 编辑工具）写回时都会把 BOM 丢掉。改完跑一次
+   `fix-encoding.ps1 -Apply` 即可。
+2. **`.cmd` 必须纯 ASCII**（`cmd.exe` 按代码页读批处理，中文注释会变成 `?`），且行尾为 CRLF。
+3. **`.githooks/pre-commit` 必须是 LF**（它由 `sh` 执行；CRLF 会让 shebang 变成 `#!/bin/sh\r`，
+   报 bad interpreter —— 而且钩子连报错的机会都没有，因为它自己就是那个执行不了的文件）。
+
+pre-commit 钩子只是**便利层**：它不会随 clone 自动安装。真正的保证层是 `tests\`（随时可跑）
+和 CI（在干净检出上跑同一套）。临时跳过钩子：`git commit --no-verify`。
 
 ## 许可
 
