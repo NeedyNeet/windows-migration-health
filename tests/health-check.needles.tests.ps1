@@ -74,6 +74,13 @@ if (-not $env:SLOW_TESTS) {
 
             # 顺带覆盖 FIX-15：没加 -NoHistory 时必须真的写出快照
             Assert-True (Test-Path -LiteralPath (Join-Path $runDir 'snapshot.json')) '未加 -NoHistory 时应写出 snapshot.json'
+
+            # 报告文件必须是**完整**的：W() 靠缓冲区凑满 25 行才落盘、章节边界由 Section() 负责，
+            # 所以脚本结尾若忘了最后那次 flush，末尾一批内容就只到屏幕、不进文件。
+            # 实测过：report.md 停在 "### 14.2 严重项逐条明细"，屏幕上却看着完整 —— 因为
+            # W() 同时 Write-Host。用户保存/转发的正是这个文件，所以这条必须是断言。
+            Assert-Match $report '\*\*下一步怎么做\*\*' '报告文件被截断：结尾的"下一步怎么做"没有落盘'
+            Assert-Match $report '14\.2 严重项逐条明细'  '报告文件缺少 14.2 严重项明细段'
         } finally {
             if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
         }
