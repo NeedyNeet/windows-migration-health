@@ -52,4 +52,14 @@ Test-Case '两个会写入的 .ps1 都是「仅 -Apply 才写」' {
     }
 }
 
+Test-Case '三个启动器都必须把退出码传递出去' {
+    # 实测过的缺陷：health-check.cmd 曾以 `pause >nul` 结尾，没有 set RC / exit /b %RC%，
+    # 于是退出码恒为 0 —— 而 health-check.ps1 明确承诺"0 = 无严重项；1 = 有严重项（便于 CI 判定）"，
+    # README 推荐的入口恰好就是这个 .cmd。任何 `health-check.cmd && echo OK` 都会永远看到没问题。
+    foreach ($n in 'health-check.cmd', 'health-fix.cmd', 'repair-migrated-apps.cmd') {
+        $t = Get-ScriptText $n
+        Assert-Match $t 'set "RC=%errorlevel%"' ("{0} 没有捕获退出码 —— 应为 set RC" -f $n)
+        Assert-Match $t 'exit /b %RC%'          ("{0} 没有把退出码传出去 —— 应为 exit /b RC" -f $n)
+    }
+}
 Complete-TestRun 'launchers'

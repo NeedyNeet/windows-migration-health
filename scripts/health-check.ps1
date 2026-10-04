@@ -289,7 +289,7 @@ W '|---|---|---|---|'
 foreach ($d in $drives) { W ("| {0}: | {1} | {2} | {3}% |" -f $d.Drive, $d.TotalGB, $d.FreeGB, $d.FreePct) }
 
 # ---- 与上次体检对比（增长报告）--------------------------------------------
-$prev = Get-ChildItem $histDir -Filter 'snapshot.json' -ErrorAction SilentlyContinue | Select-Object -First 1
+$prev = Get-ChildItem $histDir -Filter 'snapshot.json' -ErrorAction SilentlyContinue  # lint-ok: history 目录是平的，只看当层是对的 | Select-Object -First 1
 $prevObj = $null
 if ($prev) { try { $prevObj = Get-Content -LiteralPath $prev.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch {} }
 if ($prevObj) {

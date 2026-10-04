@@ -69,6 +69,7 @@ if ($usable.Count -eq 0) {
 }
 $candidates = $usable
 
+# lint-ok: 测试套件按约定只在 tests\ 顶层（lib\ 是框架，不是套件）
 $suites = @(Get-ChildItem -LiteralPath $testsDir -File -Filter '*.tests.ps1' | Sort-Object Name)
 # 名字"包含"即可：套件名形如 health-check.needles.tests.ps1，-Test needles 也要能命中
 if ($Test) { $suites = @($suites | Where-Object { $_.Name -like ('*' + $Test + '*') }) }
