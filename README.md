@@ -65,6 +65,8 @@ scripts\health-check.cmd
 rem    嫌慢可编辑该文件，把 set "SKIP=" 改成 set "SKIP=-SkipOldPathScan"
 
 rem 2) 清理（默认试运行；-Apply 才写入，需要管理员权限——请从已提权的窗口运行）
+rem    可选但推荐：把 config\health-fix.local.example.psd1 复制到 local\ 并填真值，
+rem    否则 A 段"改路径"会整段跳过（日志里写"本地配置未提供 Repoint"）
 scripts\health-fix.cmd
 scripts\health-fix.cmd -Apply
 
@@ -130,6 +132,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 - `local/` 目录存放**本机个人产物**（545 个注册表备份、体检报告、日志），已由 [.gitignore](.gitignore) 排除，不会进仓库。
 - `docs/` 里的案例报告经**脱敏**后保留本机真实场景（软件名、注册表键路径、磁盘布局），个人标识已替换为 `<user>` / `<旧用户名>` / `<PC>` / `<工作区>` 等占位符——详见下节「脱敏说明」。
 - 脚本本身**不含任何机器专属信息**（旧路径映射表需要你按自己环境填写）。
+- ⚠ **你自己的 `local/` 产物含个人标识，分享前请脱敏**：`reports/*/report.md` 开头就写着**计算机名与用户名**，明细里是**全部程序路径**；`rollback/*.reg` 是你注册表的完整内容（可能含产品许可信息）。要别人帮你看报告时，请先照本仓库的做法把 `<PC>` / `<user>` / `<旧用户名>` 替换掉——`docs/` 里的案例报告之所以到处是这些占位符，就是这个原因。
 
 ## 本机实测环境
 
@@ -187,6 +190,24 @@ pre-commit 钩子只是**便利层**：它不会随 clone 自动安装。真正�
 1. 用 `pwsh` 跑运行器（推荐）——`tests\run-tests.cmd` 本来就会**优先 `pwsh`**，找不到才回退 5.1；
 2. 装 MSI / zip 版 PowerShell 7（装在 `C:\Program Files\PowerShell\7\`，不受此限制）；
 3. 明确只要 5.1：`.\tests\run-tests.ps1 -Engine powershell`。
+
+#### 同一个根因也会影响三个 `.cmd` 启动器（但影响面小得多）
+
+MSIX 版 pwsh 在**父进程不是 PowerShell 7** 时不会把 stdout 交给父进程 —— 而三个 `.cmd` 启动器正是由
+`cmd.exe` 拉起 pwsh 的。本机（商店版 pwsh）实测：
+
+| 你怎么用 | 结果 |
+|---|---|
+| **双击**（真实控制台） | 输出正常可见 ✓ |
+| **重定向 / 管道 / 捕获**，例如 `scripts\repair-migrated-apps.cmd > plan.txt` | 子进程的输出**不进文件**（**退出码仍然正确** ✓，只有 stdout 丢） |
+| 直接用 `powershell`(5.1) 跑 `scripts\*.ps1` | 正常 ✓ |
+| 装了 MSI / zip 版 PowerShell 7 | 正常 ✓ |
+
+**所以：在本机不要把 `.cmd` 的输出重定向来做留痕。** 想看计划就直接看屏幕，或直接调
+`pwsh -File scripts\repair-migrated-apps.ps1`（它的输出是正常的），或用 `-Engine powershell` 那类写法。
+
+> 为什么不在启动器里加"检测到商店版就报警"：交互使用完全正常，**退出码也正常** —— 为一个只影响重定向
+> 的场景，给三个会写系统的启动器加判断分支，得不偿失。写清楚比改代码划算。
 
 ## 许可
 
