@@ -16,7 +16,7 @@
 1. **只想让磁盘别爆** → 只看 [disk-health.md](disk-health.md)。
 2. **要搬家** → [migration-checklist.md](migration-checklist.md)（含动手前的判断与禁令）→ 迁完按 [registry-reference.md](registry-reference.md) 复检。
 3. **遇到"文件还在但系统认不出程序"**（不管起因是搬家还是卸载残留）→ 直接用仓库脚本 `scripts/health-check.ps1` 体检，再对照 [registry-reference.md](registry-reference.md) 理解它报的每一类是什么。
-4. **想系统了解全貌** → 四篇按上表顺序读，最后看[案例报告](case-report-d-apps-migration.md)（它把 33 条实战踩坑作为附录完整保留）。
+4. **想系统了解全貌** → 四篇按上表顺序读，最后看[案例报告](case-report-d-apps-migration.md)（它把 37 条实战踩坑作为附录完整保留）。
 
 ## 与 scripts/ 的关系
 

@@ -10,9 +10,9 @@
 
 | # | 类别 | 登记位置（注册表） | 失效时的表现 | 修复动作 |
 |---|---|---|---|---|
-| 1 | **卸载记录** | `HKLM` / `HKLM\WOW6432Node` / `HKCU` 的 `…\CurrentVersion\Uninstall\*`：`InstallLocation`、`DisplayIcon`、`UninstallString`、`QuietUninstallString`、`ModifyPath`、`Inno Setup: App Path` | "设置 → 应用"里图标空白、卸载/修复点了没反应 | 改指新路径；**新位置确实没有对应文件时才删记录** |
+| 1 | **卸载记录** | `HKLM` / `HKLM\WOW6432Node` / `HKCU` 的 `…\CurrentVersion\Uninstall\*`：`InstallLocation`、`DisplayIcon`、`UninstallString`、`QuietUninstallString`、`ModifyPath`、`Inno Setup: App Path` | "设置 → 应用"里图标空白、卸载/修复点了没反应 | 改指新路径；**新位置确实没有对应文件时才删记录**。<br>⚠ **例外：要删不要指** —— 若这是**旧版本**遗留的记录（同一产品已装新版本），改指会让"卸载"去执行旧版本的卸载器，反而破坏新装的版本 |
 | 2 | **App Paths** | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths`、`HKLM\SOFTWARE\WOW6432Node\…\App Paths`、`HKCU\…\App Paths` | `Win+R` 输入程序名打不开；`ShellExecute` 找不到程序 | 三处都要改（默认值 = 完整 exe 路径） |
-| 3 | **文件关联** | `Classes\<ext>` 的默认值、`OpenWithProgids`、`OpenWithList`，以及 `ksobak` 这类"上一个默认程序"备份值 | **双击文件打不开**，或打开错误程序 | 改 ProgID 或其命令；把死 ProgID 的默认值清掉让它回落系统默认 |
+| 3 | **文件关联** | `Classes\<ext>` 的默认值、`OpenWithProgids`、`OpenWithList`，以及 `ksobak` 这类"上一个默认程序"备份值 | **双击文件打不开**，或打开错误程序 | 改 ProgID 或其命令；把死 ProgID 的默认值清掉让它回落系统默认。<br>⚠ **删掉一族 ProgID 时，必须回头清理指向它的引用**（各扩展名默认值、`OpenWithProgids`、`OpenWithList`）—— 否则只是把"死 ProgID"换成"死默认值"，双击照样打不开 |
 | 4 | **打开方式动词** | `Classes\Applications\<exe>\shell\open\command` | "打开方式"里有条目但点了没反应 | 改指新路径，或删掉该 `Applications\<exe>` 键 |
 | 5 | **右键菜单** | `*\shell`、`Directory\shell`、`Directory\Background\shell`、`SystemFileAssociations\…\shell`、`shellex\ContextMenuHandlers` | 右键菜单项点了没反应 / 报错 | 改命令路径或删除该项 |
 | 6 | **CLSID 外壳扩展** | `Classes\CLSID\{…}\InprocServer32`（缩略图、预览、属性页、URL 协议处理） | 缩略图不显示、预览窗格报错、相关功能静默失效 | 改 DLL 路径；确认无用则删该 CLSID 键 |
