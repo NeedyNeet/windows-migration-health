@@ -18,7 +18,7 @@
 #  用法：
 #    powershell -ExecutionPolicy Bypass -File .\health-check.ps1
 #    常用开关：
-#      -OutDir <目录>          报告输出根目录（默认：脚本同目录\健康体检）
+#      -OutDir <目录>          报告输出根目录（默认：脚本同目录\健康体检；.cmd 启动器会传 local\reports）
 #      -SkipOldPathScan         跳过"旧路径残留"（该步最慢，视清单条数约 3~6 分钟）
 #      -SkipClsidScan           跳过 CLSID 全量扫描
 #      -SkipAssocScan           跳过"文件关联核对"（逐扩展名核对，默认开启；嫌慢可用它）
@@ -31,6 +31,7 @@
 #  报告是逐行写入的，运行中即可打开 report.md 查看进度。
 #
 #  安全：本脚本只读。所有"状态=不存在"的项都只是报告，不会自动修改。
+#  退出码：0 = 无"严重"项；1 = 有"严重"项（便于 CI / 批处理判定）。
 # ============================================================================
 [CmdletBinding()]
 param(
@@ -85,14 +86,26 @@ function AddFinding([string]$sev, [string]$cat, [string]$loc, [string]$target, [
     }
     $findings.Add([pscustomobject]@{ Severity=$sev; Category=$cat; Location=$loc; Target=$target; Status=$status; Hint=$hint })
 }
-# 快速目录体积（.NET 枚举，比 Get-ChildItem -Recurse 快数倍）
+# 快速目录体积（.NET 枚举，比 Get-ChildItem -Recurse 快数倍）。
+# 逐层自己走栈，而不用 EnumerateFiles(AllDirectories)：后者一旦碰到**一个**读不到的子目录
+# 就整棵树抛异常，被 catch 吞掉后**整个顶层目录的体积会变成 0** —— 那是严重的少报。
+# 现在只跳过读不到的那一层，其余照常累计，并记下跳过了多少。
+$script:dirBytesSkipped = 0
 function Get-DirBytes([string]$path) {
-    try {
-        $di = New-Object System.IO.DirectoryInfo($path)
-        $sum = [long]0
-        foreach ($f in $di.EnumerateFiles('*', [System.IO.SearchOption]::AllDirectories)) { $sum += $f.Length }
-        return $sum
-    } catch { return 0 }
+    $sum = [long]0
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($path)
+    while ($stack.Count -gt 0) {
+        $cur = [string]$stack.Pop()
+        try {
+            $di = New-Object System.IO.DirectoryInfo($cur)
+            foreach ($f in $di.EnumerateFiles()) {
+                try { $sum += $f.Length } catch { $script:dirBytesSkipped++ }
+            }
+            foreach ($d in $di.EnumerateDirectories()) { $stack.Push($d.FullName) }
+        } catch { $script:dirBytesSkipped++ }
+    }
+    return $sum
 }
 
 # ---- 路径判定 --------------------------------------------------------------
@@ -816,6 +829,11 @@ if (-not $SizeScan) {
         foreach ($t in $top) { W ("| {0} | {1} |" -f $t.Name, $t.MB) }
         W ''
         $topDirs[$base] = $top
+    }
+    if ($script:dirBytesSkipped -gt 0) {
+        W ''
+        W ("⚠ 有 {0} 个目录/文件读不到（权限或占用），其体积**未计入** —— 上面的合计偏低，不要当成准确值。" -f $script:dirBytesSkipped)
+        AddFinding '提示' '目录体积' '(SizeScan)' ("{0} 个目录读不到" -f $script:dirBytesSkipped) '统计偏低' '需要准确数字时用 WizTree（它读 MFT，不受 ACL 影响）'
     }
 }
 
