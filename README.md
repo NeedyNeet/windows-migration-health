@@ -166,6 +166,28 @@ $env:SLOW_TESTS=1; .\tests\run-tests.cmd   # 连"真跑一次体检"的集成测
 pre-commit 钩子只是**便利层**：它不会随 clone 自动安装。真正的保证层是 `tests\`（随时可跑）
 和 CI（在干净检出上跑同一套）。临时跳过钩子：`git commit --no-verify`。
 
+### 只装了 Microsoft Store 版 pwsh 时会看到什么（不是仓库的问题）
+
+`tests\run-tests.ps1` 在启动每个引擎之前会先自检"能不能被本进程启动并捕获输出"。如果 `pwsh` 只有
+**Microsoft Store（MSIX）版**，而运行器正跑在 **Windows PowerShell 5.1** 下，自检会失败，于是它明确跳过：
+
+```text
+  [跳过] 引擎 pwsh：无法被本进程启动并捕获输出。
+         常见原因：pwsh 只有 Microsoft Store（MSIX）版，而本运行器正跑在 5.1 下。
+         MSIX 应用是被"激活"的、不是子进程 —— 拿不到 stdout 和退出码。
+         解决：用 pwsh 运行本运行器，或安装 MSI/zip 版 PowerShell 7。
+```
+
+原因：从 5.1 启动 MSIX 应用是一次「**应用激活**」，不是创建子进程 —— 父进程既拿不到 stdout
+（重定向得到 **0 字节**文件）也拿不到退出码。**在加上这道自检之前**，这个现象会被报成"8 个套件全部失败"：
+那 8 个套件其实全过，是运行器看不见它们的输出。现在它跳过不可用的引擎，用剩下的跑完并给出结论。
+
+三种解法任选：
+
+1. 用 `pwsh` 跑运行器（推荐）——`tests\run-tests.cmd` 本来就会**优先 `pwsh`**，找不到才回退 5.1；
+2. 装 MSI / zip 版 PowerShell 7（装在 `C:\Program Files\PowerShell\7\`，不受此限制）；
+3. 明确只要 5.1：`.\tests\run-tests.ps1 -Engine powershell`。
+
 ## 许可
 
 [MIT](LICENSE) © 2026 NeedyNeet

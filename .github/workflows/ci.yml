@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Show engine versions
-        shell: pwsh
+        shell: ${{ matrix.engine }}
         run: |
           Write-Output "harness engine: $($PSVersionTable.PSVersion)"
           & ${{ matrix.engine }} -NoProfile -Command 'Write-Output "target engine: $($PSVersionTable.PSVersion)"'
@@ -27,14 +27,14 @@ jobs:
       # SLOW_TESTS=1 启用慢速集成测试（真跑一次完整体检，约 2 分钟/引擎）：
       # 本地默认跳过以保持迭代速度，CI 上必须跑。
       - name: Run test suite on ${{ matrix.engine }}
-        shell: pwsh
+        shell: ${{ matrix.engine }}
         env:
           SLOW_TESTS: '1'
         run: .\tests\run-tests.ps1 -Engine ${{ matrix.engine }}
 
       # 测试是只读的：跑完仓库必须干净。这条能抓出"测试偷偷改了工作区"（比如自动补 BOM）。
       - name: Assert the tests did not modify the checkout
-        shell: pwsh
+        shell: ${{ matrix.engine }}
         run: |
           git status --porcelain
           if (git status --porcelain) { throw 'tests modified the repository (they must be read-only)' }
