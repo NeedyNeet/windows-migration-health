@@ -72,7 +72,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 | 设计 | 原因 |
 |---|---|
 | **只读优先**：体检脚本绝不修改系统 | 可以先放心跑，用它代替"出事后再排查" |
-| **改前必备份**：`health-fix` 每条改动前 `reg export` | 560+ 条改动全部可逐条回滚 |
+| **改前必备份**：`health-fix` 每条改动前 `reg export` 到 `local/rollback/<运行时间戳>/` | 560+ 条改动全部可逐条回滚；**备份失败则该条改动被跳过**，且第二次跑不会覆盖第一次的原始备份 |
+| **报告不许有假绿**：清单为空/全是占位符、或用了 `-Skip*` 开关时，报告明确写"本节未执行检查"并记入 `findings.csv`；测试框架里"跳过"也要计数并打印 `[SKIP]` | 旧实现只看"命中 0 个键"就打印"✓ 回归检查通过"，于是**没配置清单也会得到一张绿报告**——和第 3 行那条假阴性是同一类 |
 | **"读不到" ≠ "不存在"**：权限受限的路径判为 `denied` 并跳过 | 曾经把 `D:\WinRAR`（真实存在）误报成损坏；把权限问题当残留删掉是不可逆事故 |
 | **双引擎兼容**（5.1 / 7.x） | PS7 会把 .NET 异常包成 `MethodInvocationException`，按类型 `catch` 会**永远匹配不上** → 所有"缺失"被判成"读不到"，报告变成"一切正常"的假阴性（实测同一脚本 5.1 报 43 项、PS7 只报 1 项）。详见[案例报告 附录 A.4](docs/case-report-d-apps-migration.md) |
 | **按目标聚合 + CSV 明细** | 一个组件的残留能刷出几百行（如 Photoshop 的 89 条关联），聚合后才看得见真问题 |
@@ -92,7 +93,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 | [docs/registry-reference.md](docs/registry-reference.md) | **12 类登记参考**：每类的位置/失效表现/修复动作、统一检查方法、脚本对应关系、三类别乱动 |
 | [docs/case-report-d-apps-migration.md](docs/case-report-d-apps-migration.md) | **完整案例报告**：本次 D 盘应用迁移的逐项排查、修复与验证记录 |
 | [versions/README.md](versions/README.md) | 版本档案：`v1-ps5.1`（旧）/ `v2-ps7.6`（当前）+ 双引擎验收证据 |
-| [config/](config/) | 配置模板：`health-check.needles.example.txt`（旧路径清单）、`*.local.example.psd1`（机器专属映射，复制到 `local/` 后填真值） |
+| [config/](config/) | 配置模板：`health-check.needles.example.txt`（旧路径清单，复制到 `scripts\health-check.needles.txt`）、`*.local.example.psd1`（机器专属映射，复制到 `local/` 后填真值） |
 | [tests/](tests/) | **零依赖测试套件**：语法、编码卫生、删除门禁、映射顺序；`tests\run-tests.cmd` 会在 5.1 与 7.x 下各跑一遍 |
 | `local/` | **个人产物，已 gitignore**：机器专属配置（`*.local.psd1`）、注册表备份、体检报告、日志（见 [local/README.md](local/README.md)） |
 
