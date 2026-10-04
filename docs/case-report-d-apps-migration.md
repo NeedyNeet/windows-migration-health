@@ -106,7 +106,7 @@
    复核时又发现并清掉了**旧 0.90.1 的一条残留 bundle 记录**（`{b1781406-…}`，`DisplayIcon`/`UninstallString`/`ModifyPath` 全是旧用户目录的死路径）——这条**不能靠改路径修**：改指到新目录后，点"卸载"会去跑 0.90.1 的旧 bundle，反而可能破坏新装的 0.101，所以直接删除（备份见 `rollback\`）。
    顺带量到：`%LOCALAPPDATA%\Package Cache` 里 0.90.1 的缓存安装包还占着 **约 384 MB**（`{AA6BF89D-…}v0.90.1` 383.4 MB + `{b1781406-…}` 0.6 MB），已不再被任何已安装产品引用，**可删可留**（当前版本的两份缓存必须保留，见下）。
 
-3. **JetBrains Toolbox：已重装完成（3.8.1.0）** — 详见第三节第 3 条与 `toolbox-install\HANDOVER.md`。
+3. **JetBrains Toolbox：已重装完成（3.8.1.0）** — 逐应用的前后对照见第二节；重装的完整过程留档在 `local\toolbox-install\HANDOVER.md`（在已被 gitignore 的 `local/` 下，不进仓库）。
 
 ---
 
@@ -156,7 +156,7 @@ reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\
 
 - 16 项抽查全部解析到真实存在的文件：`App Paths`（cloudmusic / BCompare / mpv，含 x86 视图）、`cloudmusic.mp3` 与 `.ncm` 处理程序与图标、`notion://`、`.xmind`、`.torrent`、Beyond Compare 快照类型、PyCharm/IDEA 的 Toolbox 处理程序、IDEA 与 CLion 的 `InstallLocation`。
 - `Get-StartApps`（开始菜单/任务栏搜索的数据源）现在能找到：**Xmind、夸克网盘、Notion、cloudmusic、Beyond Compare、CLion、PyCharm、DataGrip、IntelliJ IDEA**。
-- 开始菜单里已无任何指向 `D:\Apps` 相关旧路径的死快捷方式（剩余的死快捷方式都属于别的软件：GARbro、Python 3.9/3.11/3.12/3.14、WPS、xmodhub、mGBA，以及 Clash for Windows / RePKG-GUI 这两个已被你删掉的便携软件）。
+- 开始菜单里已无任何指向 `D:\Apps` 相关旧路径的死快捷方式（剩余的死快捷方式都属于别的软件：GARbro、Python 3.9/3.11/3.12/3.14、WPS、xmodhub、mGBA，以及 Clash for Windows / RePKG-GUI 这两个已被机主删掉的便携软件）。
 - 脚本再审一遍剩余待修项：**0 处**，只剩那条已知无法自动修的 IDEA 卸载器路径。
 
 备份：`C:\Users\<user>\Desktop\apps-repair-backup\`（56 个 `.reg`，按注册表键导出，双击导入即可还原该键）。
