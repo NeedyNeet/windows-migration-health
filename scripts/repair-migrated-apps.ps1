@@ -35,10 +35,27 @@ if (-not $BackupDir) {
     $BackupDir = Join-Path $RepoRoot 'local\rollback'
 }
 
+# "读不到" ≠ "不存在"：权限受限的路径**绝不能**被判成缺失（AGENTS.md 硬性约定 10）。
+# 本脚本原来用裸 Test-Path 判文件是否存在，是全仓唯一没跟上那条修复的地方。权限受限时
+# Test-Path 会静默返回 False，于是把存在的目标当成缺失：
+#   * 该改写的值被当成"改不了"而跳过（只是退化，不出错）
+#   * 快捷方式那两处更糟：会把一个**本来好的**目标改写掉
+# 定义位置刻意靠前：下面的配置文件探测也要用它。
+function Test-Exists([string]$p) {
+    if (-not $p) { return $false }
+    if (Test-Path -LiteralPath $p -ErrorAction SilentlyContinue) { return $true }
+    $cls = $null
+    try { [void][System.IO.File]::GetAttributes($p) }
+    catch { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; $cls = $e.GetType().Name }
+    if (-not $cls) { return $true }
+    if ($cls -in 'UnauthorizedAccessException','SecurityException') { return $true }
+    return $false
+}
+
 # 机器专属映射：不写死在本文件里；真值放在 local\repair-migrated-apps.local.psd1
 $script:CfgPath = Join-Path $RepoRoot 'local\repair-migrated-apps.local.psd1'
 $script:Cfg = $null
-if (Test-Path -LiteralPath $script:CfgPath) {
+if (Test-Exists $script:CfgPath) {
     # Import-PowerShellDataFile 只读数据、不执行代码，5.1 与 7.x 都可用
     $script:Cfg = Import-PowerShellDataFile -LiteralPath $script:CfgPath
 } else {
@@ -131,8 +148,10 @@ function Repair-KeyTree {
             # Never repoint a value at a file that does not exist either: such an entry
             # (e.g. a JetBrains uninstaller that only Toolbox ships now, or an asset the new
             # layout keeps somewhere else) is reported instead of being made differently dead.
-            $fileRef = [regex]::Match($new, '([A-Za-z]:\\[^"]*?\.(?:exe|dll|ico|com|bat|cpl|msc|sys))')
-            if ($fileRef.Success -and -not (Test-Path -LiteralPath $fileRef.Groups[1].Value)) {
+            # 字符类排除 " | ; —— 不排除会跨过字段分隔符拼出非法路径
+            # （health-fix 的 Get-ExeFrom 早就为此排除了 |，这里当时漏了）
+            $fileRef = [regex]::Match($new, '([A-Za-z]:\\[^"|;]*?\.(?:exe|dll|ico|com|bat|cpl|msc|sys))')
+            if ($fileRef.Success -and -not (Test-Exists $fileRef.Groups[1].Value)) {
                 $script:skipped += [pscustomobject]@{ Key = $key; Name = $name; Text = $new; Missing = $fileRef.Groups[1].Value }
                 continue
             }
@@ -374,8 +393,8 @@ foreach ($root in $roots) {
         if (-not $old) { continue }
         $new = Convert-MappedPath -Text $old
         if ($null -eq $new) { continue }
-        if (Test-Path -LiteralPath $old) { continue }   # target is fine, leave it alone
-        if (-not (Test-Path -LiteralPath $new)) { continue }
+        if (Test-Exists $old) { continue }   # target is fine, leave it alone（读不到≠不存在）
+        if (-not (Test-Exists $new)) { continue }
         Set-ShortcutTarget -Lnk $f.FullName -Target $new
     }
 }
@@ -388,8 +407,8 @@ $missing = @(
 $userPrograms = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
 foreach ($m in $missing) {
     $lnk = Join-Path $userPrograms ("{0}.lnk" -f $m.Name)
-    if (Test-Path -LiteralPath $lnk) { continue }
-    if (-not (Test-Path -LiteralPath $m.Target)) { continue }
+    if (Test-Exists $lnk) { continue }
+    if (-not (Test-Exists $m.Target)) { continue }
     Set-ShortcutTarget -Lnk $lnk -Target $m.Target
 }
 
@@ -409,7 +428,7 @@ $check = @(
     'D:\Apps\Portable\mpv-lazy\mpv.exe'
 )
 foreach ($c in $check) {
-    Write-Output ("  {0,-6} {1}" -f $(if (Test-Path -LiteralPath $c) { 'OK' } else { 'ABSENT' }), $c)
+    Write-Output ("  {0,-6} {1}" -f $(if (Test-Exists $c) { 'OK' } else { 'ABSENT' }), $c)
 }
 
 if ($Apply) {
