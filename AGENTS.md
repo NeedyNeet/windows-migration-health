@@ -157,6 +157,11 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
     - `Get-ChildItem -Filter` **不带 `-Recurse` 会静默漏掉子目录**（`scripts\dev\` 下的脚本曾因此不受语法检查）
     - 变量名**不区分大小写**：`$R` 与 `$r` 是同一个变量（曾因此覆盖掉变量、拿到空结果）
     - `[IO.File]::*` 用的是**进程当前目录**，不是 PowerShell 的 `cd` —— 相对路径会静默失败，一律用绝对路径
+    - **日志函数的输出会污染返回值**：`Say` 走 success stream。在有值返回的函数里裸写 `Say ...`，
+      它的文本会被算进返回值 —— 实测事故：`Backup-Key` 的失败分支写成 `Say (...)` 紧跟 `return $false`，
+      返回值成了 `@('<日志>', $false)`；调用方 `if (-not (Backup-Key ...))` 对非空数组求值为真，
+      于是「备份失败」被判成「备份成功」、改动照做且没有备份。写成 `$null = Say ...` 即可，
+      `tests\lint.tests.ps1` 会拦住这种写法。
 ### 提交信息约定
 
 `<scope>: <一句话>`，scope 取 `health-check` / `health-fix` / `repair` / `docs` / `versions` / `repo`。

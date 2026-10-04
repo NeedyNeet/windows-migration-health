@@ -95,6 +95,34 @@ function Find-FilterWithoutRecurse {
     return $out
 }
 
+# 规则 4：在有值返回的函数里，日志函数 Say 的输出会**污染返回值**。
+# 实测事故（本仓库真实发生、由 tests\writepath.tests.ps1 抓到）：Backup-Key 的失败分支写成
+# `Say (...)` 紧跟 `return $false`，返回值于是变成 @('<日志文本>', $false)；调用方
+# `if (-not (Backup-Key ...))` 对**非空数组**求值为真 → "备份失败"被判成"备份成功"，
+# 改动照做而且没有备份 —— 恰好破坏了那条"备份失败则该条改动被跳过"的承诺。
+# 判据：函数体内若有 `return <值>`，则其中裸写的 Say（既没被赋值接住、也没接管道）即为违规。
+function Find-SayPollutingReturn {
+    param([string]$Path)
+    $out = @()
+    if (-not (Test-Path -LiteralPath $Path)) { return $out }
+    $tokens = $null; $errs = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errs)
+    if ($errs -and @($errs).Count -gt 0) { return $out }
+    foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        $valRet = @($fn.Body.FindAll({
+            param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] -and $n.Pipeline
+        }, $true))
+        if ($valRet.Count -eq 0) { continue }
+        foreach ($c in $fn.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+            if ($c.GetCommandName() -ne 'Say') { continue }
+            $pipe = $c.Parent
+            if ($pipe -is [System.Management.Automation.Language.PipelineAst] -and $pipe.PipelineElements.Count -gt 1) { continue }
+            if ($pipe.Parent -is [System.Management.Automation.Language.AssignmentStatementAst]) { continue }
+            $out += [pscustomobject]@{ Line = $c.Extent.StartLineNumber; Func = $fn.Name }
+        }
+    }
+    return $out
+}
 Test-Case '规则自测：三条规则都能抓到已知违规，也不误报' {
     # 每条断言都把**实测数目**写进消息：这个文件自己就是检查器，检查器出问题时，
     # 失败信息必须能直接告诉我"抓到了几处"，否则调试它又得靠猜。
@@ -120,8 +148,20 @@ Test-Case '规则自测：三条规则都能抓到已知违规，也不误报' {
     Assert-True ($c -eq 0) ("带 -Recurse 不应被抓到，实际 {0}" -f $c)
     $c = @(Find-FilterWithoutRecurse @('# lint-ok: 只要当层', 'Get-ChildItem $d -Filter "*.ps1"')).Count
     Assert-True ($c -eq 0) ("上一行豁免未生效，实际 {0}" -f $c)
-    $c = @(Find-FilterWithoutRecurse @('Get-ChildItem $d -Filter "*.ps1"  # lint-ok: 只要当层')).Count
-    Assert-True ($c -eq 0) ("行尾豁免未生效，实际 {0}" -f $c)
+    # 规则 4 需要真实文件才能解析
+    $probe = Join-Path ([IO.Path]::GetTempPath()) ('wmh-lint-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        $fixture = @(
+            'function Bad { Say ''x''; return $false }'
+            'function Good { $null = Say ''x''; return $false }'
+            'function GoodNoValueReturn { Say ''x'' }'
+            'function GoodPiped { Say ''x'' | Out-Null; return $true }'
+        )
+        Set-Content -LiteralPath $probe -Encoding ascii -Value $fixture
+        $hits = @(Find-SayPollutingReturn $probe)
+        Assert-Equal $hits.Count 1 ("应当只抓到 Bad 一处，实际 {0}（{1}）" -f $hits.Count, (($hits | ForEach-Object { $_.Func }) -join ','))
+        Assert-Equal $hits[0].Func 'Bad' '抓到的应当是 Bad'
+    } finally { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
 }
 Test-Case '硬性约定 3：没有按 .NET 异常类型 catch 的地方' {
     $bad = @()
@@ -143,6 +183,14 @@ Test-Case '硬性约定 14：Get-ChildItem -Filter 必须配 -Recurse（或显�
     $bad = @()
     foreach ($f in Get-LintTargets) {
         $bad += @(Find-FilterWithoutRecurse (Get-Content $f.FullName -Encoding UTF8) | ForEach-Object { "{0}:{1}  {2}" -f $f.Name, $_.Line, $_.Text })
+    }
+    Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
+}
+
+Test-Case '日志函数 Say 的输出不会污染有值返回的函数（实测出过假绿）' {
+    $bad = @()
+    foreach ($f in Get-LintTargets) {
+        $bad += @(Find-SayPollutingReturn $f.FullName | ForEach-Object { "{0}:{1}  在函数 {2} 里裸写 Say" -f $f.Name, $_.Line, $_.Func })
     }
     Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
 }

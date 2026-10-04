@@ -93,7 +93,11 @@ function Backup-Key([string]$psPath) {
     & reg.exe export $reg $f /y | Out-Null
     $code = $LASTEXITCODE
     if ($code -ne 0 -or -not (Test-Path -LiteralPath $f) -or (Get-Item -LiteralPath $f).Length -lt 64) {
-        Say ("  !! 备份失败（reg export 退出码 {0}），该键不做任何改动：{1}" -f $code, $reg)
+        # ⚠ 必须用 $null = 接住 Say：Say 走的是 **success stream**，不接住就会混进本函数的返回值，
+        # 变成 @('<日志文本>', $false)。而调用方写的是 if (-not (Backup-Key ...)) ——
+        # 对**非空数组**求值为真，于是"备份失败"被判成"备份成功"，改动照做而且没有备份。
+        # 这不是理论风险：曾经就是这个写法，`Del-Value` 在备份失败时照样把值删了。
+        $null = Say ("  !! 备份失败（reg export 退出码 {0}），该键不做任何改动：{1}" -f $code, $reg)
         return $false
     }
     [void]$script:backupOk.Add($reg)

@@ -199,6 +199,23 @@ function Backup-Key {
     & reg.exe export $regPath $file /y | Out-Null
 }
 
+# 写入一个值，并**回读校验**，返回 'ok' 或 'FAILED'。
+# 单独成函数是为了让测试能真正调用它：这段逻辑原来内联在主流程里，测试只能断言"代码看起来有写"，
+# 而它恰恰是本脚本唯一的"写完到底成没成"的判断点。
+# 空值名 = 该键的 (Default) 值：Set-ItemProperty 不接受空 -Name，所以走 Set-Item。
+function Set-ValueChecked {
+    param([string]$Key, [string]$Name, [string]$New)
+    if ($Name) {
+        Set-ItemProperty -LiteralPath $Key -Name $Name -Value $New -ErrorAction Continue
+    } else {
+        Set-Item -LiteralPath $Key -Value $New -ErrorAction Continue
+    }
+    $written = $null
+    try { $written = (Get-Item -LiteralPath $Key).GetValue($Name, $null, 'DoNotExpandEnvironmentNames') } catch { }
+    if ($written -eq $New) { return 'ok' }
+    return 'FAILED'
+}
+
 $targets = @(
     @{ Root = 'HKCU:\Software\Classes\notion';                     Profile = $true  }
     @{ Root = 'HKCU:\Software\Classes\xmind';                      Profile = $true  }
@@ -342,16 +359,7 @@ if ($script:pendingEdits.Count -eq 0) {
         Write-Output ("{0}`n    [{1}]`n    - {2}`n    + {3}" -f $e.Key, $label, $e.Old, $e.New)
         if ($Apply) {
             Backup-Key -Key $e.Key
-            if ($e.Name) {
-                Set-ItemProperty -LiteralPath $e.Key -Name $e.Name -Value $e.New -ErrorAction Continue
-            } else {
-                # an empty value name is the key's (Default) value; Set-ItemProperty
-                # refuses an empty -Name, so write it through Set-Item instead
-                Set-Item -LiteralPath $e.Key -Value $e.New -ErrorAction Continue
-            }
-            $written = (Get-Item -LiteralPath $e.Key).GetValue($e.Name, $null, 'DoNotExpandEnvironmentNames')
-            $state = 'FAILED'
-            if ($written -eq $e.New) { $state = 'ok' }
+            $state = Set-ValueChecked -Key $e.Key -Name $e.Name -New $e.New
             Write-Output ("    -> write {0}" -f $state)
         }
     }
