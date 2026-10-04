@@ -1,0 +1,26 @@
+# ============================================================
+#  个人产物：注册表备份 / 体检报告 / 日志（不进仓库）
+#  见 local/README.md 说明
+#  写法说明：忽略 local 下的全部内容，但保留 local/README.md 本身
+#  （否则 README 里指向它的链接在 GitHub 上会变成死链）
+# ============================================================
+local/*
+!local/README.md
+
+# 运行期生成的日志与清单（含个人路径）
+*.log
+Log.txt
+health-fix-log.txt
+health-fix-elevated.txt
+health-check.needles.txt
+
+# 体检/清理脚本可能在脚本目录直接产出的报告（旧默认位置）
+健康体检/
+reports/
+
+# 编辑器与系统杂项
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/

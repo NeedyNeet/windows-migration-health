@@ -1,0 +1,10 @@
+# 统一行尾，避免 clone 后 .cmd/.ps1 无法执行
+* text=auto
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.reg text eol=crlf
+*.md  text eol=lf
+*.json text eol=lf
+# 二进制/产物不参与 diff
+*.png binary
+*.xlsx binary
