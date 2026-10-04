@@ -30,7 +30,7 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集。
 |---|---|---|
 | [health-check.ps1](scripts/health-check.ps1) | **只读体检**：核对 12 类"程序位置登记"、孤儿安装缓存、旧路径残留、磁盘容量与增长 | 绝不修改任何东西；报告**边跑边写**，运行中即可打开看进度 |
 | [health-fix.ps1](scripts/health-fix.ps1) | **按规则清理残留**：能改路径的改路径（程序只是搬走了），确认没了的删记录（含引用清理） | 默认**试运行**，`-Apply` 才写入（需要管理员）；每条改动前 `reg export` 到 `local/rollback/<运行时间戳>/`，**备份失败则该条改动被跳过** |
-| [repair-migrated-apps.ps1](scripts/repair-migrated-apps.ps1) | **批量路径迁移修复**：按"旧路径 → 新路径"映射表改写注册表 | 默认试运行；写入前检查目标文件是否真的存在（不把死路径改成另一个死路径）；映射表在 `local/repair-migrated-apps.local.psd1` |
+| [repair-migrated-apps.ps1](scripts/repair-migrated-apps.ps1) | **批量路径迁移修复**：按"旧路径 → 新路径"映射表改写注册表 | 默认试运行（`.cmd` 与 `.ps1` 一致：不带参数即试运行）；写入前检查目标文件是否真的存在（不把死路径改成另一个死路径）；映射表在 `local/repair-migrated-apps.local.psd1` |
 
 三者都用 `.cmd` 启动器包装：**优先 `pwsh`（PowerShell 7.x），找不到才回退 5.1**。
 
@@ -50,8 +50,10 @@ rem 2) 清理（默认试运行；-Apply 才写入，需要管理员权限——
 scripts\health-fix.cmd
 scripts\health-fix.cmd -Apply
 
-rem 3) 迁移修复：先把"旧 → 新"映射填进 local\repair-migrated-apps.local.psd1，再
+rem 3) 迁移修复：先把"旧 → 新"映射填进 local\repair-migrated-apps.local.psd1
+rem    不带参数 = 试运行（只打印计划，不需要管理员）
 scripts\repair-migrated-apps.cmd
+rem    确认输出无误后再写入（会弹 UAC）
 scripts\repair-migrated-apps.cmd -Apply
 ```
 

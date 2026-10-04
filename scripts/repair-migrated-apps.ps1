@@ -24,6 +24,13 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
+# -Apply 要写 HKLM/HKCU：没有管理员权限就明确报错退出，而不是逐条写入失败刷屏。
+# 与 health-fix.ps1 保持一致 —— 两个会写入的脚本都不许在非提权下"假装成功"。
+if ($Apply) {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) { Write-Output 'ERROR: -Apply 需要管理员权限。请用 repair-migrated-apps.cmd -Apply，或从已提权的窗口运行。'; exit 2 }
+}
+
 # 仓库根：先把脚本目录与仓库根解析出来（-BackupDir 显式给出时也要能定位 local\ 配置）
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent $ScriptDir
