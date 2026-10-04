@@ -9,6 +9,18 @@
 > 可复用的规则与清单已拆分为三篇：操作流程见 [migration-checklist.md](migration-checklist.md)，12 类登记的定义见 [registry-reference.md](registry-reference.md)，磁盘长期管理见 [disk-health.md](disk-health.md)。
 > 本文提到的脚本都在仓库 `scripts/` 目录，产物写在 `local/`（已 gitignore）。
 
+> **数字口径（重要）**：本文跨多个阶段，各阶段的写入数与备份数是**累加**的，不是互相替代 ——
+> 正文里出现的数字都指"截至该节"的状态，所以与最终值不同。汇总：
+>
+> | 阶段 | 注册表写入 | 桌面 `apps-repair-backup\` | `local\rollback\` |
+> |---|---|---|---|
+> | 第 1~3 轮：`D:\Apps` 迁移修复（§三~§六） | 74 处取值 / 56 个键 / 5 个快捷方式（首版脚本的**计划**范围是 70 / 52 / 4） | 56 个 `.reg` | 4 个 `.reg` |
+> | 第二轮：关联类残留（§八） | 28 处取值 / 29 个键 | 89 个 | —— |
+> | 清理战役（§九~§十一） | —— | 89 个 | 105 个 `.reg`（另含批量删除清单与重启队列留档） |
+> | 之后 `health-fix` 全量体检清理 | 见 [versions/README.md](../versions/README.md) | 92 个 | **545 个 `.reg`（最终）** |
+>
+> 磁盘数字同理：§十二 是当时的状态，附录 B 是文档拆分时（更晚）的快照。
+
 ## 零、本文怎么读
 
 | 你想知道什么 | 看哪节 |
@@ -90,25 +102,33 @@
 
 ---
 
-## 五、看完报告后怎么用
+## 五、这套修复现在怎么用
 
-```text
-先预览（不改任何东西）：
-    双击 repair-migrated-apps.cmd 之前，先在本目录执行：
-    powershell -ExecutionPolicy Bypass -File .\repair-migrated-apps.ps1
+> 本节记录**当时的操作**。这套工具后来已脚本化并搬进仓库 `scripts/`，日常用法以
+> [README 的「快速开始」](../README.md) 为准。"当时"的动作对应到今天是这样：
 
-正式修复（会弹 UAC）：
-    双击 repair-migrated-apps.cmd
+```bat
+rem 1) 先只读体检（绝不修改系统）
+scripts\health-check.cmd
 
-只想看某个 app 的记录对不对：
-    reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\网易云音乐" /s
+rem 2) 迁移路径修复：把"旧 → 新"映射填进 local\repair-migrated-apps.local.psd1
+rem    不带 -Apply 时是试运行，只打印计划、不写注册表
+scripts\repair-migrated-apps.cmd
+
+rem 3) 确认输出无误后再真正写入（会弹 UAC）
+scripts\repair-migrated-apps.cmd -Apply
 ```
 
-修完之后，图标或"打开方式"如果还是旧的：注销再登录一次，或执行
+只想看某个 app 的记录对不对：
+
+```powershell
+reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\网易云音乐" /s
+```
+
+修完之后图标或"打开方式"还是旧的：注销再登录一次，或执行
 `taskkill /f /im explorer.exe & start explorer.exe`。
 
-> 注：本机 PowerShell 执行策略是 `LocalMachine = Restricted`，所以脚本必须带
-> `-ExecutionPolicy Bypass` 运行（上面的 .cmd 已经带上了）。
+> 执行策略：本机 `LocalMachine = Restricted`，所以三个 `.cmd` 启动器都带了 `-ExecutionPolicy Bypass`。
 
 ---
 
@@ -262,7 +282,7 @@ mpv 本体一切正常（`D:\Apps\Portable\mpv-lazy\mpv.exe`，v0.40.0-119，实
 - 单项删除/修改前的 `.reg` 备份（含百度网盘记录改前的原状）：`rollback\*.reg`
 - 修改前的重启队列备份：`rollback\PendingFileRenameOperations-before.txt`
 - **待办 1（已完成）**：机器已重启（21:57），360 剩余的 203 MB 已被系统自动删除，注入的 DLL 也已卸载 —— 见第十二节。
-- **待办 2（已处理）**：回收站里的剪映草稿 `JianyingPro Drafts` 目前**已不在回收站**（被清空过），实际状态见第十二节。
+- **待办 2（已确认）**：剪映草稿 `JianyingPro Drafts`（934 MB）由机主随后**手动清空回收站**删除，该空间已真正释放（见第十二节）。
 - **待办 3（仅提醒）**：我清理 PowerToys 旧配置时也删掉了它 3 个 `AppModel\SystemAppData\Microsoft.PowerToys.*`（MSIX 稀疏包状态）。若某个右键菜单类模块表现异常，在 PowerToys 设置里把该模块关掉再打开即可重建。
 
 ---
@@ -300,6 +320,12 @@ WPS **早就卸载/搬走**（`D:\Kingsoft` 不存在、无 WPS 进程），DLL 
 
 `.png→pngfile`、`.jpg/.jpeg→jpegfile`、`.gif→giffile`、`.bmp→Paint.Picture`、`.doc→Word.Document.8`、`.docx→Word.Document.12`、`.xls→Excel.Sheet.8`、`.xlsx→Excel.Sheet.12`、`.ppt→PowerPoint.Show.8`、`.pptx→PowerPoint.Show.12`、`.pdf→Acrobat.Document.DC`、`.rtf→Word.RTF.8`、`.csv→Excel.CSV`、`.svg→svgfile`、`.txt→txtfilelegacy`。
 
+> ⚠ **这一轮只验到"ProgID 存在"为止 —— 而附录 A 第 20 条讲的正是这一步不够。**
+> `.pdf→Acrobat.Document.DC` 这个 ProgID 确实存在，但它指向的 `Acrobat.exe` 后来才发现
+> 早已卸载，所以双击 PDF **实际仍然是坏的**。登记项存在 ≠ 目标文件存在，完整验收要查到目标
+> 文件那一层。（这正是 `health-check.ps1` 逐项核对"**目标文件**是否存在"、而不是只核对
+> "登记项是否存在"的原因。）
+
 ### 4. 两次自我纠错（都已在过程中修好）
 
 1. **API 用错**：通过 PowerShell 提供程序对象（`Get-Item … | DeleteValue`）删这些取值会报"无法写入到注册表项"，即使权限允许也一样；换成 .NET 原生 `OpenSubKey(path, $true)` 后**一次成功**（0 个键需要改权限）。我先前误判为"权限被锁"，白绕了 2 轮。
@@ -314,7 +340,8 @@ WPS **早就卸载/搬走**（`D:\Kingsoft` 不存在、无 WPS 进程），DLL 
 ## 十二、最终状态（截至本报告结束）
 
 - **已重启一次**（21:57）：360 的"重启时删除"队列已执行 —— `C:\Program Files (x86)\360` 只剩空壳，**该空壳也已删除**；`360Box64.sys` / `360netmon.sys` 及其服务注册**均已消失**；注入到进程里的 `SafeWrapper.dll` 已随重启卸载。
-- **回收站**：现存 `kingsoft`（211 MB，可还原）。**剪映草稿 `JianyingPro Drafts` 已不在回收站**：它是在清理时被我送进回收站的（934 MB），之后回收站被清空过。若是你按提示清掉的，那 934 MB 已真正释放；若不是你清的，告诉我我再排查。
+- **回收站**：现存 `kingsoft`（211 MB，可还原）。**剪映草稿 `JianyingPro Drafts`（934 MB）已释放**：清理时先送进回收站，随后由**机主手动清空回收站**删除 —— 该 934 MB 已真正释放。
+  （本条是事后向机主确认的，不是当时的推断；初稿写成"若是你清的…"是因为当时拿不到这个信息。）
 - **WPS**：`%APPDATA%\Kingsoft`、`%LOCALAPPDATA%\Kingsoft`、`D:\Kingsoft` 全部不存在；`Classes` 下已无任何 WPS 家族 ProgID。
 - **磁盘**：C: 可用 95.8 / 237.4 GB，D: 可用 137.5 / 238.3 GB，E: 可用 208.2 / 953.9 GB。
 - **这批清理累计释放约 6.5 GB**：360 约 960 MB（含重启后）+ 剪映 2.3 GB + 剪映草稿 934 MB + GIMP 1.1 GB + PowerToys 旧缓存 384 MB + WPS 211 MB + 其它。
