@@ -1,9 +1,9 @@
 > **仓库内路径说明**：本文提到的 `health-check.ps1` / `health-fix.ps1` / `repair-migrated-apps.ps1` 均位于本仓库 **`scripts/`** 目录；注册表备份（`rollback/`）与体检报告位于 **`local/`**（已 gitignore，不进仓库）；历史版本在 `versions/`。
 # D:\Apps 迁移后 Windows 识别异常 — 排查报告
 
-排查时间：本次会话 · 对象：`D:\Apps`（`Installed` / `JetBrains` / `Portable`）
-症状（你确认的）：开始菜单/任务栏搜索搜不到、双击关联文件提示找不到应用、应用能打开但 Windows 不认它是"已安装程序"。
-**状态：本会话已执行修复（见第六节执行记录），74 处注册表取值 + 5 个快捷方式全部写入并逐条验证通过。**
+排查与修复时间：**2026-10-03 ~ 10-04**（依据工具产物：`rollback\deleted-registry-keys-2026-10-03.txt`、`rollback\PendingFileRenameOperations-before.txt`、`local/reports/20261004-*`）· 对象：`D:\Apps`（`Installed` / `JetBrains` / `Portable`）
+症状（机主当时描述）：开始菜单/任务栏搜索搜不到、双击关联文件提示找不到应用、应用能打开但 Windows 不认它是"已安装程序"。
+**状态：修复已执行（见第六节执行记录），74 处注册表取值 + 5 个快捷方式全部写入并逐条验证通过。**
 
 > **相关文档**：本文是**案例全过程**（含证据、误判与自我纠错）。
 > 可复用的规则与清单已拆分为三篇：操作流程见 [migration-checklist.md](migration-checklist.md)，12 类登记的定义见 [registry-reference.md](registry-reference.md)，磁盘长期管理见 [disk-health.md](disk-health.md)。
@@ -19,7 +19,7 @@
 > | 清理战役（§九~§十一） | —— | 89 个 | 105 个 `.reg`（另含批量删除清单与重启队列留档） |
 > | 之后 `health-fix` 全量体检清理 | 见 [versions/README.md](../versions/README.md) | 92 个 | **545 个 `.reg`（最终）** |
 >
-> 磁盘数字同理：§十二 是当时的状态，附录 B 是文档拆分时（更晚）的快照。
+> 磁盘数字同理：§十二 是当时的状态，附录 B 是**更晚一次**的快照（它只记总容量，不再记可用量）。
 
 ## 零、本文怎么读
 
@@ -48,16 +48,16 @@
 `C:\Program Files (x86)\...`、`C:\Users\<旧用户名>\...`、`D:\JetBrains\...`、`D:\BCompare-...` 这些**已经不存在**的路径，
 所以 Windows 按记录去找 → 找不到 → 表现成"识别不到"。
 
-额外发现两点，跟你这次的问题同源但不是同一个坑：
+额外发现两点，与本次问题同源但不是同一个坑：
 
 1. **Windows 用户目录被改过名**：注册表里到处是 `C:\Users\<旧用户名>`，但现在实际是 `C:\Users\<user>`（`C:\Users\<旧用户名>` 已不存在）。Notion、Xmind、JetBrains Daemon、百度网盘、REDlauncher、PowerToys、Python 3.14 等记录全部因此失效。
-2. **`D:\WinRAR` 一开始被我误判为"权限损坏"，现已证伪**：当时"访问被拒绝"是**本会话自身的低完整性(Low Integrity)文件沙箱**造成的，不是 Windows 权限问题。用任务计划程序以你的**正常令牌（Medium 完整性、沙箱之外）**实测：`D:\WinRAR` 可正常列出 32 个文件、`WinRAR.exe`(3.28 MB) 与 `%LOCALAPPDATA%\PowerToys\PowerToys.exe`(1.25 MB) 都可正常读取；两者的权限清单里也没有任何拒绝项，反而明确授予了 `BUILTIN\Users` 读取 / 你本人完全控制。详见第七节。
+2. **`D:\WinRAR` 一开始被我误判为"权限损坏"，现已证伪**：当时"访问被拒绝"是**执行排查的那个受控会话自身的低完整性(Low Integrity)文件沙箱**造成的，不是 Windows 权限问题。用任务计划程序以**机主的正常令牌（Medium 完整性、沙箱之外）**实测：`D:\WinRAR` 可正常列出 32 个文件、`WinRAR.exe`(3.28 MB) 与 `%LOCALAPPDATA%\PowerToys\PowerToys.exe`(1.25 MB) 都可正常读取；两者的权限清单里也没有任何拒绝项，反而明确授予了 `BUILTIN\Users` 读取 / 机主账户完全控制。详见第七节。
 
 ---
 
 ## 二、逐应用对照表
 
-| 应用 | Windows 记录的位置（已失效） | 实际位置 | 造成你看到的哪种症状 |
+| 应用 | Windows 记录的位置（已失效） | 实际位置 | 对应的症状 |
 |---|---|---|---|
 | 网易云音乐 3.1.41 | `C:\Program Files (x86)\NetEase\CloudMusic` | `D:\Apps\Installed\NetEase\CloudMusic` | 双击 mp3/flac/ncm 等打不开；`Win+R` 输入 `cloudmusic` 找不到；设置里的卸载/图标失效 |
 | 夸克网盘 3.19.0 | `C:\Program Files (x86)\quark-cloud-drive` | `D:\Apps\Installed\quark-cloud-drive` | 搜索里没有它（根本没有开始菜单快捷方式）；.torrent 双击报找不到应用；卸载项失效 |
@@ -96,12 +96,12 @@
 
 ---
 
-## 四、还需要你决定的两件事
+## 四、当时留给机主的两件事（均已有结论）
 
 1. **`D:\WinRAR`：什么都不用做**（原先的"权限损坏"结论已证伪，见第七节）。
    WinRAR 自身完整、注册正确；唯一可留意的是它没有 `rarreg.key`（未注册版），要注册把 key 文件放进 `D:\WinRAR\` 即可。
 
-2. **`PowerToys`：已由你重装完成并复核通过（0.101.2362.0）**
+2. **`PowerToys`：机主已重装完成，复核通过（0.101.2362.0）**
    新版装在 `C:\Users\<user>\AppData\Local\PowerToys`（3847 项，`PowerToys.exe` 0.101.2362.0、签名 Valid），两条记录都指向新用户目录、图标与卸载器文件均存在。
    复核时又发现并清掉了**旧 0.90.1 的一条残留 bundle 记录**（`{b1781406-…}`，`DisplayIcon`/`UninstallString`/`ModifyPath` 全是旧用户目录的死路径）——这条**不能靠改路径修**：改指到新目录后，点"卸载"会去跑 0.90.1 的旧 bundle，反而可能破坏新装的 0.101，所以直接删除（备份见 `rollback\`）。
    顺带量到：`%LOCALAPPDATA%\Package Cache` 里 0.90.1 的缓存安装包还占着 **约 384 MB**（`{AA6BF89D-…}v0.90.1` 383.4 MB + `{b1781406-…}` 0.6 MB），已不再被任何已安装产品引用，**可删可留**（当前版本的两份缓存必须保留，见下）。
@@ -171,11 +171,11 @@ reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\
 
 **复核发现**：
 
-1. 本会话进程的令牌是 **`Mandatory Label\Low Mandatory Level`（S-1-16-4096，低完整性）** —— 这是 DSH 文件沙箱自身的受限令牌，不是你的正常登录令牌。
+1. 执行排查的进程令牌是 **`Mandatory Label\Low Mandatory Level`（S-1-16-4096，低完整性）** —— 这是 DSH 文件沙箱自身的受限令牌，不是机主的正常登录令牌。
 2. 用管理员令牌读取时，两处的权限清单**没有任何拒绝项**，反而明确授权：
    - `D:\WinRAR`：`BUILTIN\Users` 读取、`NT AUTHORITY\Authenticated Users` 修改、`BUILTIN\Administrators` 完全控制；所有者 `BUILTIN\Administrators`。
-   - `%LOCALAPPDATA%\PowerToys`：`<PC>\<user>` 完全控制（所有者也是你），`BUILTIN\Users` 读取。
-3. **决定性验证**：绕过沙箱，用任务计划程序以**你的正常令牌（Medium 完整性）**执行读取测试 ——
+   - `%LOCALAPPDATA%\PowerToys`：`<PC>\<user>` 完全控制（所有者也是机主账户），`BUILTIN\Users` 读取。
+3. **决定性验证**：绕过沙箱，用任务计划程序以**机主的正常令牌（Medium 完整性）**执行读取测试 ——
    - `D:\WinRAR` 成功列出 **32 个文件**：`WinRAR.exe`（3,286,680 字节，2024/05/15）、`UnRAR.exe`、`Uninstall.exe`、`RarExt.dll`、`WinRAR.chm` 等齐全；
    - `%LOCALAPPDATA%\PowerToys\PowerToys.exe` 成功读取（1,249,864 字节，2025/04/09）；
    - 两者权限清单中都没有拒绝项，所以正常程序（资源管理器、开始菜单）访问它们**不会**被拒绝。
@@ -248,11 +248,11 @@ mpv 本体一切正常（`D:\Apps\Portable\mpv-lazy\mpv.exe`，v0.40.0-119，实
 | 动作 | 结果 |
 |---|---|
 | 删除 `HKLM\SOFTWARE\WOW6432Node\...\Uninstall\IntelliJ IDEA 2024.2.2` | 该记录（旧版 242.22855.74）的 `UninstallString` 指向 `D:\IntelliJ IDEA 2024.2.2\bin\Uninstall.exe`（旧路径且文件不存在），点"卸载"必然失败 → **已删除**（备份 `rollback\HKLM_..._IntelliJ IDEA 2024.2.2.reg`）。保留的是 Toolbox 接管的那条（`HKCU\...\Uninstall\IntelliJ IDEA 2024.2.2`，version 2026.1，无独立卸载器，属正常） |
-| 复核 PowerToys（你已重装 0.101.2362.0） | 新版 `%LOCALAPPDATA%\PowerToys` 3847 项；`PowerToys.exe` 0.101.2362.0、签名 Valid；两条记录（HKLM MSI `{FEC7CE70-…}` + HKCU bundle `{28CDFE7F-…}`）均指向新用户目录，图标与卸载器文件**都存在** |
+| 复核 PowerToys（机主已重装 0.101.2362.0） | 新版 `%LOCALAPPDATA%\PowerToys` 3847 项；`PowerToys.exe` 0.101.2362.0、签名 Valid；两条记录（HKLM MSI `{FEC7CE70-…}` + HKCU bundle `{28CDFE7F-…}`）均指向新用户目录，图标与卸载器文件**都存在** |
 | 删除 PowerToys 0.90.1 的残留 bundle 记录 | `HKCU\...\Uninstall\{b1781406-…}`：版本 0.90.1，`DisplayIcon`/`UninstallString`/`ModifyPath` 全是 `C:\Users\<旧用户名>\…` 死路径 → **已删除**（备份 `rollback\HKCU_..._{b1781406-…}.reg`）。**不能改成新路径**：那会让"卸载"去执行 0.90.1 的旧 bundle，可能破坏新装的 0.101 |
 | `%LOCALAPPDATA%\Package Cache` 现状 | 当前版本两份缓存**必须保留**：`{FEC7CE70-…}v0.101.2362.0`（282.1 MB，MSI 缓存，卸载/修复要用）+ `{28CDFE7F-…}`（1.2 MB，bundle 缓存）。**可删可留**：0.90.1 的两份旧缓存共 **约 384 MB**（`{AA6BF89D-…}v0.90.1` 383.4 MB + `{b1781406-…}` 0.6 MB），已不被任何已安装产品引用 |
 
-**至此除"用户目录改名"这件更大范围、与 D:\Apps 无关的旧账（见第四节第 3 条）之外，本报告涉及的问题全部处理完毕。**
+**至此除"用户目录改名"这件更大范围、与 D:\Apps 无关的旧账（见第一节「额外发现 1」）之外，本报告涉及的问题全部处理完毕。**
 
 删除过的注册表键备份统一放在 `rollback\`（4 个 `.reg` + `README.md`，说明每个的来历与"不要盲目导入"）；D:\Apps 修复的 89 个取值级备份仍在桌面 `apps-repair-backup\`。
 
@@ -260,7 +260,7 @@ mpv 本体一切正常（`D:\Apps\Portable\mpv-lazy\mpv.exe`，v0.40.0-119，实
 
 ## 十、清理 GIMP / 360 / PowerToys 旧配置 / GitHub Desktop / 剪映（百度网盘只修不删）
 
-按你的要求：**注册表残留 + 程序文件夹 + 用户数据一起删**（五个应用），**百度网盘保留并修复**。
+处理范围（按机主当时的要求）：**注册表残留 + 程序文件夹 + 用户数据一起删**（五个应用），**百度网盘保留并修复**。
 
 ### 结果一览
 
@@ -279,19 +279,19 @@ mpv 本体一切正常（`D:\Apps\Portable\mpv-lazy\mpv.exe`，v0.40.0-119，实
 
 ### 三个"藏在里面的坑"（值得单独记下来）
 
-1. **360 劫持过你的默认浏览器**：`.htm/.html/.mht/.mhtm/.mhtml/.shtm/.shtml/.xht/.xhtml/.ses` 这 10 个扩展键在 `HKCU\Software\Classes` 下的**默认值被写成 `360seURL` / `360SeSES`**（还留了 `ksobak` 备份值）。更麻烦的是：**这些键的所有者是 360 遗留的、无法解析的 SID**，导致连管理员令牌都写不进去（`reg add` 直接 `Access is denied`，`DeleteValue` 报"无法写入到注册表项"）。
-   处理：对 10 个键**逐个夺取所有权 → 重置权限项 → 恢复完全控制 → 删除 360 取值**（全部记录在日志里）。验证：`.htm` 的 HKCU 覆盖值已清空，回落到系统默认 `htmlfile`（= 你的默认浏览器），不再指向已删除的 360。
-2. **360 的 `SafeWrapper.dll` 被注入到浏览器/终端进程**里，所以程序目录删不干净 → 用"重启时删除"队列解决，**不需要杀掉你正在用的浏览器**。
+1. **360 劫持过默认浏览器**：`.htm/.html/.mht/.mhtm/.mhtml/.shtm/.shtml/.xht/.xhtml/.ses` 这 10 个扩展键在 `HKCU\Software\Classes` 下的**默认值被写成 `360seURL` / `360SeSES`**（还留了 `ksobak` 备份值）。更麻烦的是：**这些键的所有者是 360 遗留的、无法解析的 SID**，导致连管理员令牌都写不进去（`reg add` 直接 `Access is denied`，`DeleteValue` 报"无法写入到注册表项"）。
+   处理：对 10 个键**逐个夺取所有权 → 重置权限项 → 恢复完全控制 → 删除 360 取值**（全部记录在日志里）。验证：`.htm` 的 HKCU 覆盖值已清空，回落到系统默认 `htmlfile`（= 机主的默认浏览器），不再指向已删除的 360。
+2. **360 的 `SafeWrapper.dll` 被注入到浏览器/终端进程**里，所以程序目录删不干净 → 用"重启时删除"队列解决，**不需要杀掉机主正在用的浏览器**。
 3. **360 在 `360Safe\deepscan` 挂载了自己的注册表 hive**（`HKU\360SPDM` → `spdm.dat`）→ 必须先 `reg unload HKU\360SPDM` 才删得掉那批文件。
 
-### 备份与待办
+### 备份与遗留事项
 
 - 批量删除的注册表键清单：`rollback\deleted-registry-keys-2026-10-03.txt`
 - 单项删除/修改前的 `.reg` 备份（含百度网盘记录改前的原状）：`rollback\*.reg`
 - 修改前的重启队列备份：`rollback\PendingFileRenameOperations-before.txt`
-- **待办 1（已完成）**：机器已重启（21:57），360 剩余的 203 MB 已被系统自动删除，注入的 DLL 也已卸载 —— 见第十二节。
-- **待办 2（已确认）**：剪映草稿 `JianyingPro Drafts`（934 MB）由机主随后**手动清空回收站**删除，该空间已真正释放（见第十二节）。
-- **待办 3（仅提醒）**：我清理 PowerToys 旧配置时也删掉了它 3 个 `AppModel\SystemAppData\Microsoft.PowerToys.*`（MSIX 稀疏包状态）。若某个右键菜单类模块表现异常，在 PowerToys 设置里把该模块关掉再打开即可重建。
+- **360 剩余部分**：机器重启后（21:57），剩下的 203 MB 已被系统自动删除，注入的 DLL 也已卸载 —— 见第十二节。
+- **剪映草稿**：`JianyingPro Drafts`（934 MB）由机主随后**手动清空回收站**删除，该空间已真正释放（见第十二节）。
+- **PowerToys 的 MSIX 稀疏包状态**：清理旧配置时一并删掉了 3 个 `AppModel\SystemAppData\Microsoft.PowerToys.*`。若某个右键菜单类模块表现异常，在 PowerToys 设置里把该模块关掉再打开即可重建（见附录 A 第 37 条）。
 
 ---
 
@@ -349,7 +349,7 @@ WPS **早就卸载/搬走**（`D:\Kingsoft` 不存在、无 WPS 进程），DLL 
 
 - **已重启一次**（21:57）：360 的"重启时删除"队列已执行 —— `C:\Program Files (x86)\360` 只剩空壳，**该空壳也已删除**；`360Box64.sys` / `360netmon.sys` 及其服务注册**均已消失**；注入到进程里的 `SafeWrapper.dll` 已随重启卸载。
 - **回收站**：现存 `kingsoft`（211 MB，可还原）。**剪映草稿 `JianyingPro Drafts`（934 MB）已释放**：清理时先送进回收站，随后由**机主手动清空回收站**删除 —— 该 934 MB 已真正释放。
-  （本条是事后向机主确认的，不是当时的推断；初稿写成"若是你清的…"是因为当时拿不到这个信息。）
+  （本条是事后向机主确认的，不是当时的推断。）
 - **WPS**：`%APPDATA%\Kingsoft`、`%LOCALAPPDATA%\Kingsoft`、`D:\Kingsoft` 全部不存在；`Classes` 下已无任何 WPS 家族 ProgID。
 - **磁盘**：C: 可用 95.8 / 237.4 GB，D: 可用 137.5 / 238.3 GB，E: 可用 208.2 / 953.9 GB。
 - **这批清理累计释放约 6.5 GB**：360 约 960 MB（含重启后）+ 剪映 2.3 GB + 剪映草稿 934 MB + GIMP 1.1 GB + PowerToys 旧缓存 384 MB + WPS 211 MB + 其它。
@@ -433,12 +433,16 @@ WPS **早就卸载/搬走**（`D:\Kingsoft` 不存在、无 WPS 进程），DLL 
 
 ---
 
-# 附录 B：本机现状速查（文档拆分时的基线）
+# 附录 B：本机现状速查（某一时刻的快照）
 
-- **引擎**：PowerShell **7.6.6 (Core)** 已安装；5.1 仍在。两个 `.cmd` 启动器会自动优先用 7.6。
-- **磁盘**：C: 93.9 / 237.4 GB 可用，D: 137.2 / 238.3 GB，E: 208.1 / 953.9 GB。
-- `D:\Apps` 下应用登记已全部对齐新路径；PowerToys 0.101.2362.0、JetBrains Toolbox 3.8.1、百度网盘 8.6.0.102 均正常。
+> ⚠ **这是快照，不是"当前状态"。** 磁盘可用量、体检条数、备份文件数都会随时间变化 ——
+> 要当前值请跑 `scripts\health-check.cmd`，看 `local/reports/` 里最新那份报告。
+> 本附录只保留**有长期意义**的信息：机器布局、引擎版本、做过哪些清理、产物在哪。
+
+- **引擎**：PowerShell **7.6.6 (Core)** 已安装，5.1 仍在；三个 `.cmd` 启动器都优先用 `pwsh`、找不到才回退 5.1。
+- **磁盘布局**（**总容量**）：C: 237.4 GB / D: 238.3 GB / E: 953.9 GB。**可用量会变，不要在别处引用本文的数字。**
+- **`D:\Apps` 登记状态**：迁移涉及的应用登记已全部对齐新路径；PowerToys 0.101.2362.0、JetBrains Toolbox 3.8.1、百度网盘 8.6.0.102 均正常。
 - **已清除**：GIMP、360（含驱动与残留）、GitHub Desktop 残留、剪映、WPS 全套残留（含 `KWPP.*`/`KET.*`/图标覆盖）、PowerToys 旧缓存、Adobe（Photoshop/Acrobat 关联与 ProgID）、ACDSee、Unity/LM Studio/MongoDB 协议、旧用户目录的失效记录、mpv 全套关联修复。
-- **体检现状**（PS7.6）：**7 严重 / 137 警告 / 3 提示**；7 项严重均为**有意保留**（Steam/ACE 由启动器自维护、Adobe 因卸载器仍在而保守保留），137 项警告主要是 `Package Cache` 被清理导致的系统组件卸载入口失效（不影响使用）。
-- **回滚备份**：`local/rollback/`（545 个 `.reg`，由 `health-fix` 写入）+ 桌面 `apps-repair-backup/`（92 个 `.reg`，由早期版本的 `repair-migrated-apps` 写入；该脚本现已改为写入 `local/rollback/`）。
+- **体检结论**（截至本文，用 PS7.6 跑的）：当时那 7 项"严重"**全部为有意保留**（Steam/ACE 由各自启动器自维护、Adobe 因卸载器仍在而保守保留）；另有大量"警告"来自 `Package Cache` 被清理后系统组件的卸载入口失效（不影响使用）。**条数每次体检都会变**，以 `local/reports/` 里最新那份为准。
+- **回滚备份**：`local/rollback/`（由 `health-fix` 逐条写入，**每次运行一个时间戳子目录**，所以总量随时间增长；早期批次还有 `deleted-registry-keys-2026-10-03.txt` 这类清单）+ 桌面 `apps-repair-backup/`（92 个 `.reg`，由早期版本的 `repair-migrated-apps` 写入；该脚本现已改为写入 `local/rollback/`）。
 - **版本档案**：`versions/README.md`（`v1-ps5.1/` 旧版、`v2-ps7.6/` 当前版，含双引擎一致性验收证据）。
