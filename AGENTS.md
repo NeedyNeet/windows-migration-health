@@ -78,15 +78,14 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
 ### 常用命令
 
 ```powershell
-# 语法校验：改完脚本必做，两个引擎都要通过
-foreach ($eng in 'powershell','pwsh') {
-  & $eng -NoProfile -Command "`$e=`$null; [void][System.Management.Automation.Language.Parser]::ParseFile('.\scripts\health-check.ps1',[ref]`$null,[ref]`$e); if (`$e) { 'ERR ' + `$e.Count } else { 'OK' }"
-}
+# 改完任何东西，先跑测试：双引擎、含语法校验与编码卫生
+.\tests\run-tests.cmd               # 或 .\tests\run-tests.ps1 [-Engine pwsh|powershell] [-Test encoding]
+                                    # 在每个可用引擎下各跑一遍 tests\*.tests.ps1；退出码 0=全通过
 
 .\scripts\health-check.cmd          # 只读体检（报告进 local\reports）
 .\scripts\health-fix.cmd            # 清理试运行
-.\scripts\health-fix.cmd -Apply     # 真正清理（自动提权 + 自动备份）
-.\scripts\repair-migrated-apps.cmd  # 迁移路径修复（先填好脚本顶部 $pathMap）
+.\scripts\health-fix.cmd -Apply     # 真正清理（需要管理员权限，脚本会自行检查）
+.\scripts\repair-migrated-apps.cmd  # 迁移路径修复（映射表在 local\repair-migrated-apps.local.psd1）
 ```
 
 ### 本地服务优先（探索用），脚本保持零依赖（红线）
@@ -105,7 +104,11 @@ foreach ($eng in 'powershell','pwsh') {
 **验收前先交叉验证**：脚本报出的数字（体积排行、备份数量、改动条数）要用工具复核一次——本项目历史上出现过"脚本说不存在、其实是权限读不到"的假阳性。
 ### 双引擎验收标准（改动后必须做）
 
-同一份脚本在 5.1 与 7.x 下各跑一遍，要求**严重项集合逐条相同**（用 `Compare-Object` 比对两份 `findings.csv`），且语法校验都为 `OK`。
+```powershell
+.\tests\run-tests.cmd     # 语法 + 编码卫生 + 关键逻辑门禁，在 5.1 与 7.x 下各跑一遍
+```
+
+改过体检逻辑后还要跑**真实体检对比**：同一份脚本在 5.1 与 7.x 下各跑一遍，要求**严重项集合逐条相同**（用 `Compare-Object` 比对两份 `findings.csv`）——自动化测试替代不了这一步。
 
 ### 硬性约定（都是踩过的坑）
 

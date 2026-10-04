@@ -27,8 +27,8 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集。
 | 脚本 | 作用 | 安全设计 |
 |---|---|---|
 | [health-check.ps1](scripts/health-check.ps1) | **只读体检**：核对 12 类"程序位置登记"、孤儿安装缓存、旧路径残留、磁盘容量与增长 | 绝不修改任何东西；报告**边跑边写**，运行中即可打开看进度 |
-| [health-fix.ps1](scripts/health-fix.ps1) | **按规则清理残留**：能改路径的改路径（程序只是搬走了），确认没了的删记录（含引用清理） | 默认**试运行**，`-Apply` 才写入；每条改动前 `reg export` 到 `local/rollback/` |
-| [repair-migrated-apps.ps1](scripts/repair-migrated-apps.ps1) | **批量路径迁移修复**：按"旧路径 → 新路径"映射表改写注册表 | 默认试运行；写入前检查目标文件是否真的存在（不把死路径改成另一个死路径） |
+| [health-fix.ps1](scripts/health-fix.ps1) | **按规则清理残留**：能改路径的改路径（程序只是搬走了），确认没了的删记录（含引用清理） | 默认**试运行**，`-Apply` 才写入（需要管理员）；每条改动前 `reg export` 到 `local/rollback/<运行时间戳>/`，**备份失败则该条改动被跳过** |
+| [repair-migrated-apps.ps1](scripts/repair-migrated-apps.ps1) | **批量路径迁移修复**：按"旧路径 → 新路径"映射表改写注册表 | 默认试运行；写入前检查目标文件是否真的存在（不把死路径改成另一个死路径）；映射表在 `local/repair-migrated-apps.local.psd1` |
 
 三者都用 `.cmd` 启动器包装：**优先 `pwsh`（PowerShell 7.x），找不到才回退 5.1**。
 
@@ -39,11 +39,11 @@ rem 1) 体检（只读，不需要管理员）——双击即可
 scripts\health-check.cmd
 rem    嫌慢可编辑该文件，把 set "SKIP=" 改成 set "SKIP=-SkipOldPathScan"
 
-rem 2) 清理（默认试运行；-Apply 才写入，会自动请求管理员）
+rem 2) 清理（默认试运行；-Apply 才写入，需要管理员权限——请从已提权的窗口运行）
 scripts\health-fix.cmd
 scripts\health-fix.cmd -Apply
 
-rem 3) 迁移修复：先在脚本顶部填好 $pathMap 映射表，再
+rem 3) 迁移修复：先把"旧 → 新"映射填进 local\repair-migrated-apps.local.psd1，再
 scripts\repair-migrated-apps.cmd
 scripts\repair-migrated-apps.cmd -Apply
 ```
@@ -91,8 +91,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 | [docs/registry-reference.md](docs/registry-reference.md) | **12 类登记参考**：每类的位置/失效表现/修复动作、统一检查方法、脚本对应关系、三类别乱动 |
 | [docs/case-report-d-apps-migration.md](docs/case-report-d-apps-migration.md) | **完整案例报告**：本次 D 盘应用迁移的逐项排查、修复与验证记录 |
 | [versions/README.md](versions/README.md) | 版本档案：`v1-ps5.1`（旧）/ `v2-ps7.6`（当前）+ 双引擎验收证据 |
-| [config/health-check.needles.example.txt](config/health-check.needles.example.txt) | 旧路径清单模板（复制为 `health-check.needles.txt` 并填入你的历史路径） |
-| `local/` | **个人产物，已 gitignore**：注册表备份、体检报告、日志（见 [local/README.md](local/README.md)） |
+| [config/](config/) | 配置模板：`health-check.needles.example.txt`（旧路径清单）、`*.local.example.psd1`（机器专属映射，复制到 `local/` 后填真值） |
+| [tests/](tests/) | **零依赖测试套件**：语法、编码卫生、删除门禁、映射顺序；`tests\run-tests.cmd` 会在 5.1 与 7.x 下各跑一遍 |
+| `local/` | **个人产物，已 gitignore**：机器专属配置（`*.local.psd1`）、注册表备份、体检报告、日志（见 [local/README.md](local/README.md)） |
 
 ## 隐私与个人数据（重要）
 

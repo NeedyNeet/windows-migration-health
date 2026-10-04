@@ -4,7 +4,8 @@
 
 | 子目录/文件 | 内容 | 来源 |
 |---|---|---|
-| `rollback/` | **注册表备份**：每条改动前用 `reg export` 导出的 `.reg`（本机约 545 个）+ 批量删除清单 | `health-fix.ps1` 与 `repair-migrated-apps.ps1`（`Backup-Key`） |
+| `rollback/<运行时间戳>/` | **注册表备份**：每条改动前用 `reg export` 导出的 `.reg`（每次运行一个子目录，所以第二次跑不会覆盖第一次的原始备份）+ 批量删除清单 | `health-fix.ps1` 与 `repair-migrated-apps.ps1`（`Backup-Key`） |
+| `health-fix.local.psd1`、`repair-migrated-apps.local.psd1` | **本机真值配置**：旧用户目录名、路径改指表、迁移映射表（模板见 `config\*.local.example.psd1`） | 手工维护；两个脚本启动时读取 |
 | `reports/` | 体检报告：`report.md`（人读）、`findings.csv`（逐条明细）、`snapshot.json`（磁盘增长基线）、`history/` | `health-check.ps1 -OutDir local\reports` |
 | `health-fix-log.txt` | 清理脚本的详细日志（含每一条改动与统计） | `health-fix.ps1` |
 | `health-fix-elevated.txt` | 提权窗口的原始输出 | `health-fix.cmd` |
