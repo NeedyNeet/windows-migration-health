@@ -1,0 +1,26 @@
+#!/bin/sh
+# ============================================================================
+#  pre-commit 钩子（L2 层）—— 转调 PowerShell 实现
+#
+#  为什么是 sh 而不是直接写 PowerShell：git 在 Windows 上也用 sh 执行钩子，
+#  而无扩展名的文件没法被 Windows 直接执行。所以这里只做一个转发。
+#
+#  ⚠ 本文件必须保持 **LF** 行尾：CRLF 会让 shebang 变成 "#!/bin/sh\r"，
+#    报 bad interpreter。.gitattributes 里为此加了 `.githooks/pre-commit text eol=lf`，
+#    tests\encoding.tests.ps1 也有一条断言守着它。
+#
+#  启用（每个 clone 各做一次）：
+#      git config core.hooksPath .githooks
+#    或直接跑： .\scripts\dev\install-hooks.ps1
+#
+#  临时跳过：git commit --no-verify
+# ============================================================================
+root=$(git rev-parse --show-toplevel) || exit 0
+# 与其它启动器一致：优先 pwsh（7.x），找不到再回退 5.1。
+# ⚠ 但必须先**探测它真的能跑**：如果 pwsh 来自微软商店，`command -v pwsh` 会命中
+#   WindowsApps 下的 app execution alias，而 sh（bash）执行不了它 —— 报 "Permission denied"。
+#   不探测的话钩子会以"执行失败"的方式拦住每一次提交，看起来像编码检查不通过，非常误导。
+if command -v pwsh >/dev/null 2>&1 && pwsh -NoProfile -Command 'exit 0' >/dev/null 2>&1; then
+    exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$root/.githooks/pre-commit.ps1"
+fi
+exec powershell -NoProfile -ExecutionPolicy Bypass -File "$root/.githooks/pre-commit.ps1"

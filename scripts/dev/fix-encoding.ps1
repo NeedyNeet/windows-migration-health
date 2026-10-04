@@ -157,6 +157,32 @@ foreach ($f in $texts) {
 }
 if ($ctrlBad -eq 0) { Write-Out '  ✓ 未发现异常控制字符' }
 
+# ---- 4) .githooks 下的钩子：行尾必须 LF（由 sh 执行）----
+# CRLF 会让 shebang 变成 "#!/bin/sh\r" -> git 报 bad interpreter。这个坑特别难自己爬出来：
+# **钩子就是那个执行不了的文件**，它连打印错误的机会都没有，用户只能靠 --no-verify 脱身。
+# 所以这里必须能自动修。
+Write-Out ''
+Write-Out '--- .githooks：行尾必须 LF ---'
+$n = 0
+$hookDir = Join-Path $RepoRoot '.githooks'
+if (Test-Path -LiteralPath $hookDir) {
+    foreach ($f in (Get-ChildItem -LiteralPath $hookDir -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension -ne '.ps1' })) {
+        $rel = $f.FullName.Substring($RepoRoot.Length + 1)
+        $text = $utf8Plain.GetString([IO.File]::ReadAllBytes($f.FullName))
+        if ($text -notmatch "`r") { continue }
+        if ($Apply) {
+            [IO.File]::WriteAllText($f.FullName, ($text -replace "`r`n", "`n"), $utf8Plain)
+            Write-Out ('  [已转 LF] {0}' -f $rel)
+        } else {
+            Write-Out ('  [将转 LF] {0}' -f $rel)
+        }
+        $n++
+    }
+}
+if ($n -eq 0) { Write-Out '  ✓ 行尾均已是 LF' }
+$fixedCount += $n
+
 # ---- 汇总 ----
 Write-Out ''
 Write-Out '================ 汇总 ================'

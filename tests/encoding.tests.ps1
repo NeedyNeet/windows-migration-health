@@ -11,6 +11,18 @@
 # ============================================================================
 . "$PSScriptRoot\lib\TestKit.ps1"
 
+# 金丝雀（刻意不依赖框架自身）：本套件要检查的东西里就包括 lib\TestKit.ps1 的 BOM，而它一旦
+# 丢了 BOM，5.1 会把框架按 ANSI 解码 -> 加载失败 -> 下面所有 Test-Case 都不存在 -> 脚本
+# "静默跑完"且退出码为 0 -> 调用方（尤其 pre-commit 钩子）会以为检查通过。
+# 这是致命的假绿，所以先用最原始的方式确认框架真的加载了。
+if (-not (Get-Command Test-Case -ErrorAction SilentlyContinue) -or
+    -not (Get-Command Complete-TestRun -ErrorAction SilentlyContinue) -or
+    -not (Get-Command Get-RepoRoot -ErrorAction SilentlyContinue)) {
+    Write-Output '##RESULT: FAIL'
+    Write-Output 'encoding 套件无法运行：tests\lib\TestKit.ps1 没有正确加载（最可能的原因就是它自己丢了 UTF-8 BOM）。'
+    exit 1
+}
+
 $repo = Get-RepoRoot
 
 # versions/ 是冻结归档（AGENTS.md：只增不改），其历史不合规项不在检查范围；
@@ -69,6 +81,13 @@ Test-Case '.cmd 行尾全部为 CRLF（LF-only 批处理在 goto/标签上不可
         if ($bare -gt 0) { $bad += ("{0}({1} 处裸 LF)" -f $f.Name, $bare) }
     }
     Assert-True ($bad.Count -eq 0) ("存在裸 LF：{0}" -f ($bad -join ' ; '))
+}
+
+Test-Case '.githooks/pre-commit 必须是 LF（含 CR 会让 sh 报 bad interpreter）' {
+    $hook = Join-Path $repo '.githooks\pre-commit'
+    Assert-True (Test-Path -LiteralPath $hook) '找不到 .githooks\pre-commit'
+    $cr = ([regex]::Matches([IO.File]::ReadAllText($hook), "`r")).Count
+    Assert-Equal $cr 0 'pre-commit 里含 CR —— sh 会把 shebang 读成 "#!/bin/sh<CR>" 而拒绝执行'
 }
 
 Test-Case '文本文件中没有裸 CR（转义求值吃掉字符的痕迹）' {
