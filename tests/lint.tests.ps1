@@ -154,7 +154,30 @@ function Find-ScopeCasingClash {
     }
     return $out
 }
-Test-Case '规则自测：三条规则都能抓到已知违规，也不误报' {
+# 规则 6：空的 catch 必须写明为什么可以吞。空 catch 把"做不到"变成"看起来做到了"。
+# 理由必须写在子句内，**或该行行尾**（`catch { }  # 读不到就当没有`）—— 后者是为了不让一行式
+# 写法被迫拆成多行。判据刻意不接受"上一行的注释"：那样的注释多半在说别的事。
+function Find-SilentCatch {
+    param([string]$Path)
+    $out = @()
+    if (-not (Test-Path -LiteralPath $Path)) { return $out }
+    $tokens = $null; $errs = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errs)
+    if ($errs -and @($errs).Count -gt 0) { return $out }
+    $lines = [IO.File]::ReadAllLines($Path)
+    foreach ($c in $ast.FindAll({
+        param($n) $n -is [System.Management.Automation.Language.CatchClauseAst] -and $n.Body.Statements.Count -eq 0
+    }, $true)) {
+        if ($c.Extent.Text -match '#') { continue }
+        $endLine = $lines[$c.Extent.EndLineNumber - 1]
+        $col = $c.Extent.EndColumnNumber - 1
+        $trailing = if ($col -lt $endLine.Length) { $endLine.Substring($col) } else { '' }
+        if ($trailing -match '#') { continue }
+        $out += [pscustomobject]@{ Line = $c.Extent.StartLineNumber; Text = ($c.Extent.Text -replace "`r?`n", ' ') }
+    }
+    return $out
+}
+Test-Case '规则自测：每条规则都能抓到已知违规，也不误报' {
     # 每条断言都把**实测数目**写进消息：这个文件自己就是检查器，检查器出问题时，
     # 失败信息必须能直接告诉我"抓到了几处"，否则调试它又得靠猜。
     $c = @(Find-NetTypeCatch @('try { } catch [System.IO.FileNotFoundException] { }')).Count
@@ -207,6 +230,24 @@ Test-Case '规则自测：三条规则都能抓到已知违规，也不误报' {
         Assert-Equal $hits2.Count 1 ("规则 5 应当只抓到 1 处，实际 {0}" -f $hits2.Count)
         Assert-Equal $hits2[0].FileVar 'backupDir' '抓到的应当是 $backupDir 与 $script:BackupDir 的撞车'
     } finally { Remove-Item -LiteralPath $probe2 -Force -ErrorAction SilentlyContinue }
+
+    # 规则 6 也需要真实文件
+    $probe3 = Join-Path ([IO.Path]::GetTempPath()) ('wmh-lint6-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        $fixture3 = @(
+            'function A { try { x } catch {} }'
+            'function B { try { x } catch { } }   # 读不到就当没有'
+            'function C { try { x } catch { $global:y = 1 } }'
+            'function D {'
+            '    try { x } catch {'
+            '        # 读不到就当没有'
+            '    }'
+            '}'
+        )
+        Set-Content -LiteralPath $probe3 -Encoding ascii -Value $fixture3
+        $hits3 = @(Find-SilentCatch $probe3)
+        Assert-Equal $hits3.Count 1 ("规则 6 应当只抓到 A 一处，实际 {0}" -f $hits3.Count)
+    } finally { Remove-Item -LiteralPath $probe3 -Force -ErrorAction SilentlyContinue }
 }
 Test-Case '硬性约定 3：没有按 .NET 异常类型 catch 的地方' {
     $bad = @()
@@ -244,6 +285,14 @@ Test-Case '硬性约定 14：没有"仅大小写不同"的变量名撞车（Powe
     $bad = @()
     foreach ($f in Get-LintTargets) {
         $bad += @(Find-ScopeCasingClash $f.FullName | ForEach-Object { "{0}:{1}  ${2} 与 {3} 是同一个变量" -f $f.Name, $_.Line, $_.FileVar, $_.Scoped })
+    }
+    Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
+}
+
+Test-Case '空的 catch 必须写明为什么可以吞（空 catch 会把"做不到"变成"看起来做到了"）' {
+    $bad = @()
+    foreach ($f in Get-LintTargets) {
+        $bad += @(Find-SilentCatch $f.FullName | ForEach-Object { "{0}:{1}  {2}" -f $f.Name, $_.Line, ($_.Text -replace '^(.{0,44}).*', '$1') })
     }
     Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
 }

@@ -236,7 +236,7 @@ function Set-ValueChecked {
         Set-Item -LiteralPath $Key -Value $New -ErrorAction Continue
     }
     $written = $null
-    try { $written = (Get-Item -LiteralPath $Key).GetValue($Name, $null, 'DoNotExpandEnvironmentNames') } catch { }
+    try { $written = (Get-Item -LiteralPath $Key).GetValue($Name, $null, 'DoNotExpandEnvironmentNames') } catch { }  # 读不到就算"没写进去"：回读拿不到值时必须报 FAILED，而不是沉默
     if ($written -eq $New) { return 'ok' }
     return 'FAILED'
 }
@@ -444,7 +444,7 @@ $roots = @("$env:APPDATA\Microsoft\Windows\Start Menu",
 foreach ($root in $roots) {
     foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -Filter *.lnk -ErrorAction SilentlyContinue)) {
         $old = ''
-        try { $old = $sp.CreateShortcut($f.FullName).TargetPath } catch {}
+        try { $old = $sp.CreateShortcut($f.FullName).TargetPath } catch {}  # 读不出来就保持空串（这一行只负责取值）
         if (-not $old) { continue }
         $new = Convert-MappedPath -Text $old
         if ($null -eq $new) { continue }

@@ -133,10 +133,22 @@ function Del-Value([string]$psPath, [string]$valueName, [string]$why = '') {
     if (-not (Backup-Key $psPath)) { $script:stat['跳过']++; Say ("  [跳过] 备份失败，未删除：{0}" -f $psPath); return }
     $rk = Open-RegKey $psPath $true
     if (-not $rk) { return }
-    if ($Apply) { try { $rk.DeleteValue($valueName) } catch { Fix-Acl $psPath; $r2 = Open-RegKey $psPath $true; if ($r2) { try { $r2.DeleteValue($valueName) } catch {}; $r2.Close() } } }
+    if ($Apply) {
+        try { $rk.DeleteValue($valueName) }
+        catch {
+            # 多半是权限：修一次 ACL 再试；仍然失败就放弃 —— 但下面会回读校验，不会谎报删掉了
+            Fix-Acl $psPath
+            $r2 = Open-RegKey $psPath $true
+            if ($r2) { try { $r2.DeleteValue($valueName) } catch {}; $r2.Close() }  # 第二次仍失败就放弃；下面的回读校验会如实报告（不谎报删掉了）
+        }
+    }
     $rk.Close()
+    # 回读校验：值还在就如实写出来。读不到也按"还在"算 —— 读不到时没有资格声称删掉了
+    # （Del-Key 早就是这么做的，Del-Value 之前只报"尝试过"）。
+    $still = $null
+    if ($Apply) { $still = Get-RegValue $psPath $valueName }
     $script:stat['删值']++
-    Say ("  [删值] {0} [{1}]  ({2})" -f ($psPath -replace 'Microsoft\.PowerShell\.Core\\Registry::',''), $(if ($valueName) { $valueName } else { '(default)' }), $why)
+    Say ("  [删值] {0} [{1}]  ({2}){3}" -f ($psPath -replace 'Microsoft\.PowerShell\.Core\\Registry::',''), $(if ($valueName) { $valueName } else { '(default)' }), $why, $(if ($Apply -and $null -ne $still) { '  !! 值仍在（未删掉）' } else { '' }))
 }
 function Set-Text([string]$psPath, [string]$valueName, [string]$old, [string]$new, [string]$why = '') {
     $cur = [string](Get-RegValue $psPath $valueName)
@@ -356,7 +368,7 @@ foreach ($r in $clsRoots) {
                 $v = [string]$rk.GetValue($vn)
                 if ($v -and $deadProgIds.Contains($v)) {
                     if (-not (Backup-Key $k)) { $script:stat['跳过']++; Say ("  [跳过] 备份失败，未清引用：{0}" -f $k); continue }
-                    if ($Apply) { try { $rk.DeleteValue($vn) } catch {} }
+                    if ($Apply) { try { $rk.DeleteValue($vn) } catch {} }  # 删不掉不中断；这里**不校验**结果 —— $refFixed 记的是"尝试过"（要修它，先把这个内联块抽成可测函数）
                     Say ("  [引用] {0} [{1}] = {2}" -f $ext, $(if ($vn) { $vn } else { 'default' }), $v); $refFixed++
                 }
             }
@@ -364,7 +376,7 @@ foreach ($r in $clsRoots) {
             $icoFile = Get-ExeFrom $ico
             if ($icoFile -and (Test-Missing $icoFile)) {
                 if (-not (Backup-Key $k)) { $script:stat['跳过']++; Say ("  [跳过] 备份失败，未清图标：{0}" -f $k) }
-                else { if ($Apply) { try { $rk.DeleteValue('DefaultIcon') } catch {} }; Say ("  [图标] {0}\DefaultIcon = {1}（文件不存在）" -f $ext, $ico); $refFixed++ }
+                else { if ($Apply) { try { $rk.DeleteValue('DefaultIcon') } catch {} }; Say ("  [图标] {0}\DefaultIcon = {1}（文件不存在）" -f $ext, $ico); $refFixed++ }  # 同上：DefaultIcon 删不掉也照报 [图标]
             }
             $rk.Close()
         }
@@ -376,7 +388,7 @@ foreach ($r in $clsRoots) {
                 $cand = if ($v) { $v } else { $vn }
                 if ($cand -and $deadProgIds.Contains($cand)) {
                     if (-not (Backup-Key $k)) { $script:stat['跳过']++; Say ("  [跳过] 备份失败，未清引用：{0}\{1}" -f $ext, $sub); continue }
-                    if ($Apply) { try { $sk.DeleteValue($vn) } catch {} }
+                    if ($Apply) { try { $sk.DeleteValue($vn) } catch {} }  # 删不掉不中断；这里不校验结果 —— $refFixed 记的是"尝试过"
                     Say ("  [引用] {0}\{1} [{2}] = {3}" -f $ext, $sub, $vn, $v); $refFixed++
                 }
             }
@@ -425,7 +437,7 @@ foreach ($r in $clsRoots) {
                         if ($Apply) { $rk.SetValue('', 'txtfilelegacy') }
                         Say ("  [改路径] {0}: txtfile -> txtfilelegacy" -f $ext)
                     } else {
-                        if ($Apply) { try { $rk.DeleteValue('') } catch {} }
+                        if ($Apply) { try { $rk.DeleteValue('') } catch {} }  # 删不掉不中断；不校验结果 —— $dFixed 记的是"尝试过"
                         Say ("  [悬空默认值] {0} = {1}" -f $ext, $dv)
                     }
                     $dFixed++
@@ -440,7 +452,7 @@ foreach ($r in $clsRoots) {
                 $cand = if ($v) { $v } else { $vn }
                 if ($cand -and -not $allProg.Contains($cand) -and $cand -notmatch '^AppX') {
                     if (-not (Backup-Key $k)) { $script:stat['跳过']++; Say ("  [跳过] 备份失败，未清悬空引用：{0}" -f $k); continue }
-                    if ($Apply) { try { $sk.DeleteValue($vn) } catch {} }
+                    if ($Apply) { try { $sk.DeleteValue($vn) } catch {} }  # 同上：悬空引用删不掉也照报 [悬空打开方式]
                     Say ("  [悬空打开方式] {0}\OpenWithProgids [{1}]" -f $ext, $cand)
                     $dFixed++
                 }

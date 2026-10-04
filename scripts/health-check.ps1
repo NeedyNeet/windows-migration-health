@@ -53,7 +53,7 @@ $script:PSName  = "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PS
 $script:Enc = if ($script:PSMajor -ge 7) { 'utf8BOM' } else { 'UTF8' }
 # 脚本所在目录（param 默认值里 $PSScriptRoot 可能为空，所以在这里解析）
 $scriptDir = $PSScriptRoot
-if (-not $scriptDir) { try { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path } catch {} }
+if (-not $scriptDir) { try { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path } catch {} }  # 取不到就保持空，后面按"路径不明"处理
 if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
 if (-not $OutDir) { $OutDir = Join-Path $scriptDir '健康体检' }
 $stamp   = Get-Date -Format 'yyyyMMdd-HHmm'
@@ -173,7 +173,7 @@ function Test-ProgIdTargets([string]$progId) {
 }
 function Get-FirstPath([string]$s) {
     if (-not $s) { return '' }
-    try { $s = [Environment]::ExpandEnvironmentVariables($s) } catch {}
+    try { $s = [Environment]::ExpandEnvironmentVariables($s) } catch {}  # 展开失败就用原串：未定义的环境变量不该让整段检查失败
     $m = [regex]::Match($s, '([A-Za-z]:\\[^";|]+)')
     if (-not $m.Success) { return '' }
     $p = $m.Groups[1].Value.Trim()
@@ -281,7 +281,7 @@ foreach ($d in 'C','D','E') {
                 FreePct = [math]::Round(100*$dr.AvailableFreeSpace/$dr.TotalSize,1)
             }
         }
-    } catch {}
+    } catch {}  # 某个盘读不到（未就绪/无介质）就跳过它，不该让整张磁盘表失败
 }
 W ''
 W '| 盘 | 共 (GB) | 可用 (GB) | 可用 % |'
@@ -291,7 +291,7 @@ foreach ($d in $drives) { W ("| {0}: | {1} | {2} | {3}% |" -f $d.Drive, $d.Total
 # ---- 与上次体检对比（增长报告）--------------------------------------------
 $prev = Get-ChildItem $histDir -Filter 'snapshot.json' -ErrorAction SilentlyContinue  # lint-ok: history 目录是平的，只看当层是对的 | Select-Object -First 1
 $prevObj = $null
-if ($prev) { try { $prevObj = Get-Content -LiteralPath $prev.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch {} }
+if ($prev) { try { $prevObj = Get-Content -LiteralPath $prev.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch {} }  # 上次快照读不出来就当没有（不对比增长，而不是报错）
 if ($prevObj) {
     $days = [math]::Round(((Get-Date) - [datetime]$prevObj.timestamp).TotalDays, 1)
     W ''
@@ -643,7 +643,7 @@ foreach ($r in $lnkRoots) {
     if (-not (Test-Path -LiteralPath $r)) { continue }
     foreach ($f in (Get-ChildItem -LiteralPath $r -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue)) {
         $t = ''
-        try { $t = $sp.CreateShortcut($f.FullName).TargetPath } catch {}
+        try { $t = $sp.CreateShortcut($f.FullName).TargetPath } catch {}  # 读不出来的快捷方式直接跳过（下一行 if (-not $t) { continue }），绝不报成"目标不存在"
         if (-not $t) { continue }
         if ((Get-Status $t) -eq 'missing') {
             $lnkBad++

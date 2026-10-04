@@ -152,6 +152,17 @@ Test-Case 'health-fix：试运行下 Set-Text 一个字都不改（这是最重�
     Assert-Equal (Get-RegValue $k 'P') 'C:\old\x.exe' '试运行改动了注册表 —— 这是不可接受的'
 }
 
+Test-Case 'health-fix：Del-Value 删掉后如实报告（回读校验，不谎报）' {
+    $k = "$sandbox\dvok"; New-Item -Path $k -Force | Out-Null
+    Set-ItemProperty -LiteralPath $k -Name 'V' -Value 'bye'
+    Reset-BackupState (Join-Path $tmpRoot 'dvok')
+    $Apply = $true
+    Del-Value $k 'V' 'test'
+    Assert-True ($null -eq (Get-RegValue $k 'V')) '值应当真的被删掉'
+    $logText = if (Test-Path -LiteralPath $log) { [IO.File]::ReadAllText($log, [Text.Encoding]::UTF8) } else { '' }
+    Assert-Match    $logText '\[删值\].*\[V\]' '日志里应当有一条删值记录'
+    Assert-NotMatch $logText '值仍在' '删除成功时不该报告"值仍在"（那就是谎报）'
+}
 Test-Case 'health-fix：-Apply 下 Del-Key 真的把键删掉' {
     $k = "$sandbox\dk"; New-Item -Path $k -Force | Out-Null
     Set-ItemProperty -LiteralPath $k -Name 'V' -Value 'x'
