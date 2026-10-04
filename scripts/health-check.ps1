@@ -226,6 +226,19 @@ function Get-EffectiveProgId([string]$ext) {
     return $null
 }
 
+# 旧路径清单是否"可用"：
+#   empty       = 没有条目（模板里全是注释）—— 这一步实际上没做，绝不能报绿
+#   placeholder = 条目全是占位符（含 <> 或"旧用户名"之类）—— 同样不能当成检查通过
+#   ok          = 至少有一条像真实路径
+# 历史教训：旧实现只看 $hits.Count -eq 0 就打印"✓ 回归检查通过"，
+# 于是"没配置清单"会得到一张绿色报告 —— 和 PS7 把"缺失"误判成"读不到"是同一类假阴性。
+function Get-NeedlesState([string[]]$List) {
+    if (-not $List -or @($List).Count -eq 0) { return 'empty' }
+    $real = @($List | Where-Object { $_ -and $_ -notmatch '[<>]' -and $_ -notmatch '旧用户名|旧名|old-name|oldname|OLDPROFILE' })
+    if ($real.Count -eq 0) { return 'placeholder' }
+    return 'ok'
+}
+
 W ("# 健康体检报告  {0}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
 W ''
 W ("- 计算机：{0}    用户：{1}" -f $env:COMPUTERNAME, $env:USERNAME)
@@ -364,6 +377,7 @@ Section '4. 文件关联目标核对（双击文件能不能打开）'
 # ============================================================================
 if ($SkipAssocScan) {
     W '（本次已用 -SkipAssocScan 跳过；这一步逐扩展名核对，是最耗时的一节）'
+    AddFinding '提示' '体检范围' '-SkipAssocScan' '文件关联核对被跳过' '未执行检查' '报告里不体现失效的文件关联；需要时去掉该开关重跑'
 } else {
 $extBad = 0; $extTotal = 0
 W '说明：只列出"生效 ProgID 或其命令/图标指向不存在的文件"的扩展名。'
@@ -505,6 +519,10 @@ Section '7. CLSID 扩展（右键菜单 / 缩略图 / 预览 / shell 扩展）'
         }
     }
     if ($clsidBad -eq 0) { W ("| ✓ | 共 {0} 个 CLSID | — | 目标均存在 |" -f $clsidTotal) }
+} else {
+    Section '7. CLSID 扩展（右键菜单 / 缩略图 / 预览 / shell 扩展）—— 已跳过'
+    W '（本次已用 -SkipClsidScan 跳过 —— **本节没有做任何检查**。）'
+    AddFinding '提示' '体检范围' '-SkipClsidScan' 'CLSID 外壳扩展核对被跳过' '未执行检查' '报告里不体现失效的右键菜单/缩略图/预览；需要时去掉该开关重跑'
 }
 
 # ============================================================================
@@ -672,16 +690,17 @@ else { W ''; W ("**可释放合计约 {0:N1} MB**" -f ($orphanBytes/1MB)) }
 Section '12. 旧路径残留扫描'
 # ============================================================================
 if ($SkipOldPathScan) {
-    W '（本次已用 -SkipOldPathScan 跳过）'
+    W '（本次已用 -SkipOldPathScan 跳过 —— **本节没有做任何检查**，不代表没有残留。）'
+    AddFinding '提示' '体检范围' '-SkipOldPathScan' '旧路径残留扫描被跳过' '未执行检查' '报告里不体现旧路径残留；需要时去掉该开关重跑'
 } else {
     if (-not (Test-Path -LiteralPath $needles)) {
-        # 首次运行播种一份"清单模板"：只含注释与占位示例，不含任何机器专属路径。
-        # 请把你自己的历史路径填进来（改名前后的用户目录是最高频的失效根源）。
+        # 首次运行播种一份"清单模板"：**只含注释**，不含任何机器专属路径。
+        # 注意：正因为只有注释，下面会判定为 empty 并明确报告"未执行有效检查"——这是刻意的。
         $defaultNeedles = @(
             '# 一行一个"旧路径"。体检时会全注册表搜索这些字符串，报告所有仍引用它们的键。',
-            '# 首次运行自动生成；下面是占位示例，请替换成你自己机器上的真实旧路径。',
+            '# 首次运行自动生成。请把本机真实的历史路径填在下面（去掉行首的 # 才生效）。',
             '#',
-            '# 例：改名前的用户目录（最典型的失效根源）',
+            '# 例：改名前的用户目录 —— 最典型的失效根源，强烈建议填',
             '# C:\Users\<旧用户名>',
             '#',
             '# 例：迁移前程序所在的旧目录',
@@ -689,62 +708,84 @@ if ($SkipOldPathScan) {
             '# D:\Apps\Portable\<搬走前的旧名字>'
         )
         $defaultNeedles | Set-Content -LiteralPath $needles -Encoding $script:Enc
-        W ("已生成清单文件：{0}（可自行增删）" -f $needles)
+        W ("已生成清单文件：{0}" -f $needles)
     }
-    $list = Get-Content -LiteralPath $needles -Encoding UTF8 | Where-Object { $_ -and $_ -notmatch '^\s*#' }
-    $searchRoots = @(
-        'HKCU\Software\Classes','HKLM\Software\Classes','HKLM\Software\WOW6432Node\Classes',
-        'HKCU\Software\Microsoft\Windows\CurrentVersion','HKLM\Software\Microsoft\Windows\CurrentVersion'
-    )
-    W ("清单 {0} 条 × 根键 {1} 个；该步较慢（约 3~6 分钟），请耐心等待。" -f @($list).Count, $searchRoots.Count)
-    W ''
-    $hits = @{}
-    $i = 0
-    foreach ($n in $list) {
-        $i++
-        Write-Host ("  [{0}/{1}] 搜索 {2} ..." -f $i, @($list).Count, $n) -ForegroundColor DarkGray
-        foreach ($root in $searchRoots) {
-            $cur = ''
-            foreach ($line in (& reg.exe query $root /f $n /s 2>$null)) {
-                if ($line -match '^(HKEY_[A-Z_]+)\\(.+)$') {
-                    $cur = $matches[1] + '\' + $matches[2]
-                    if ($line -match [regex]::Escape($n)) { $hits[$cur] = $n }
-                } elseif ($line -match [regex]::Escape($n) -and $cur) { $hits[$cur] = $n }
-            }
+    $list  = @(Get-Content -LiteralPath $needles -Encoding UTF8 | Where-Object { $_ -and $_ -notmatch '^\s*#' })
+    $state = Get-NeedlesState $list
+    if ($state -ne 'ok') {
+        # 关键：清单为空或全是占位符时，旧实现会打印"✓ 回归检查通过"——那是最危险的假阴性，
+        # 和 PS7 把"缺失"误判成"读不到"是同一类：报告说一切正常，其实根本没查。
+        W ("⚠ **本节未执行有效检查**：清单{0}。" -f $(if ($state -eq 'empty') { '为空（文件里全是注释）' } else { '里全是占位符' }))
+        W ''
+        W ("清单文件：{0}" -f $needles)
+        if ($list.Count -gt 0) {
+            W ''
+            W '当前清单内容（看起来都不是真实路径）：'
+            foreach ($n in $list) { W ("- {0}" -f $n) }
         }
-    }
-    W ("命中 {0} 个键：" -f $hits.Count)
-    W ''
-    if ($hits.Count -eq 0) {
-        W '✓ 注册表中已无这些旧路径的引用（回归检查通过）'
+        W ''
+        W '请按"一行一个"填入本机真实的历史路径，并去掉行首的 # ，然后重跑体检。'
+        AddFinding '警告' '旧路径残留' $needles $(if ($state -eq 'empty') { '(清单为空)' } else { '(清单全是占位符)' }) '未执行有效检查' '填好清单后重跑；**不要**把本节当成"已确认无残留"'
     } else {
-        W '| 旧路径 | 仍引用的键 |'
-        W '|---|---|'
-        foreach ($k in ($hits.Keys | Sort-Object)) {
-            W ("| {0} | {1} |" -f $hits[$k], ($k -replace '^HKEY_LOCAL_MACHINE','HKLM' -replace '^HKEY_CURRENT_USER','HKCU'))
-            AddFinding '警告' '旧路径残留' $k $hits[$k] '注册表仍引用这个旧路径' '按"旧→新"映射改写；新位置不存在则删除该记录'
-        }
-    }
-    if ($ScanConfigFiles) {
+        $searchRoots = @(
+            'HKCU\Software\Classes','HKLM\Software\Classes','HKLM\Software\WOW6432Node\Classes',
+            'HKCU\Software\Microsoft\Windows\CurrentVersion','HKLM\Software\Microsoft\Windows\CurrentVersion'
+        )
+        W ("清单 {0} 条 × 根键 {1} 个；该步较慢（约 3~6 分钟），请耐心等待。" -f $list.Count, $searchRoots.Count)
         W ''
-        W '**文本配置里的旧路径**（扫描 D:\Apps 下的 conf/ini/json/properties/txt 等）'
+        W '本次搜索的路径：'
+        foreach ($n in $list) { W ("- {0}" -f $n) }
         W ''
-        $cfgRoot = 'D:\Apps'
-        if (Test-Path -LiteralPath $cfgRoot) {
-            $cand = Get-ChildItem -LiteralPath $cfgRoot -Recurse -File -ErrorAction SilentlyContinue -Include *.conf,*.ini,*.json,*.properties,*.cfg,*.yaml,*.yml,*.txt,*.bat,*.cmd,*.ps1 |
-                    Where-Object { $_.Length -lt 1MB -and $_.FullName -notmatch '\\node_modules\\|\\\.git\\|\\cache\\|\\Cache\\' } |
-                    Select-Object -First 3000
-            $cfgHits = 0
-            foreach ($f in $cand) {
-                foreach ($n in $list) {
-                    if (Select-String -LiteralPath $f.FullName -SimpleMatch -Pattern $n -Quiet -ErrorAction SilentlyContinue) {
-                        W ("- {0}  ← 含旧路径 {1}" -f $f.FullName, $n)
-                        AddFinding '提示' '配置文件旧路径' $f.FullName $n '配置文件里写死了旧路径' '按需改成新路径（迁移后常被忽略）'
-                        $cfgHits++
-                    }
+        $hits = @{}
+        $i = 0
+        foreach ($n in $list) {
+            $i++
+            Write-Host ("  [{0}/{1}] 搜索 {2} ..." -f $i, $list.Count, $n) -ForegroundColor DarkGray
+            foreach ($root in $searchRoots) {
+                $cur = ''
+                foreach ($line in (& reg.exe query $root /f $n /s 2>$null)) {
+                    if ($line -match '^(HKEY_[A-Z_]+)\\(.+)$') {
+                        $cur = $matches[1] + '\' + $matches[2]
+                        if ($line -match [regex]::Escape($n)) { $hits[$cur] = $n }
+                    } elseif ($line -match [regex]::Escape($n) -and $cur) { $hits[$cur] = $n }
                 }
             }
-            if ($cfgHits -eq 0) { W '- ✓ 未发现' }
+        }
+        W ("命中 {0} 个键：" -f $hits.Count)
+        W ''
+        if ($hits.Count -eq 0) {
+            W '✓ 注册表中已无这些旧路径的引用（回归检查通过）'
+        } else {
+            W '| 旧路径 | 仍引用的键 |'
+            W '|---|---|'
+            foreach ($k in ($hits.Keys | Sort-Object)) {
+                W ("| {0} | {1} |" -f $hits[$k], ($k -replace '^HKEY_LOCAL_MACHINE','HKLM' -replace '^HKEY_CURRENT_USER','HKCU'))
+                AddFinding '警告' '旧路径残留' $k $hits[$k] '注册表仍引用这个旧路径' '按"旧→新"映射改写；新位置不存在则删除该记录'
+            }
+        }
+        # 文本配置扫描只在"清单可用"时有意义：清单为空时它会遍历 0 个关键词并打印
+        # "- ✓ 未发现" —— 那是第二个假绿，所以放进这个分支里。
+        if ($ScanConfigFiles) {
+            W ''
+            W '**文本配置里的旧路径**（扫描 D:\Apps 下的 conf/ini/json/properties/txt 等）'
+            W ''
+            $cfgRoot = 'D:\Apps'
+            if (Test-Path -LiteralPath $cfgRoot) {
+                $cand = Get-ChildItem -LiteralPath $cfgRoot -Recurse -File -ErrorAction SilentlyContinue -Include *.conf,*.ini,*.json,*.properties,*.cfg,*.yaml,*.yml,*.txt,*.bat,*.cmd,*.ps1 |
+                        Where-Object { $_.Length -lt 1MB -and $_.FullName -notmatch '\\node_modules\\|\\\.git\\|\\cache\\|\\Cache\\' } |
+                        Select-Object -First 3000
+                $cfgHits = 0
+                foreach ($f in $cand) {
+                    foreach ($n in $list) {
+                        if (Select-String -LiteralPath $f.FullName -SimpleMatch -Pattern $n -Quiet -ErrorAction SilentlyContinue) {
+                            W ("- {0}  ← 含旧路径 {1}" -f $f.FullName, $n)
+                            AddFinding '提示' '配置文件旧路径' $f.FullName $n '配置文件里写死了旧路径' '按需改成新路径（迁移后常被忽略）'
+                            $cfgHits++
+                        }
+                    }
+                }
+                if ($cfgHits -eq 0) { W '- ✓ 未发现' }
+            }
         }
     }
 }
