@@ -8,7 +8,11 @@
 | `health-fix.local.psd1`、`repair-migrated-apps.local.psd1` | **本机真值配置**：旧用户目录名、路径改指表、迁移映射表（模板见 `config\*.local.example.psd1`） | 手工维护；两个脚本启动时读取 |
 | `reports/` | 体检报告：`report.md`（人读）、`findings.csv`（逐条明细）、`snapshot.json`（磁盘增长基线）、`history/` | `health-check.ps1 -OutDir local\reports` |
 | `health-fix-log.txt` | 清理脚本的详细日志（含每一条改动与统计） | `health-fix.ps1` |
-| `health-fix-elevated.txt` | 提权窗口的原始输出 | `health-fix.cmd` |
+
+> **历史**：早期版本的 `health-fix.cmd` 会把控制台输出重定向到 `health-fix-elevated.txt`。
+> cmd 的重定向走的是 OEM 代码页（中文系统上是 936），那个文件因此是 **GBK 乱码**。
+> 现在启动器不再重定向——脚本自己写的 `health-fix-log.txt` 已经是完整的 UTF-8 日志。
+> 旧的 `health-fix-elevated.txt` 若还在，属历史产物，可以删。
 
 ## 为什么单独放这里
 
