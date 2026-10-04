@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: tests (${{ matrix.engine }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [pwsh, powershell]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show engine versions
+        shell: pwsh
+        run: |
+          Write-Output "harness engine: $($PSVersionTable.PSVersion)"
+          & ${{ matrix.engine }} -NoProfile -Command 'Write-Output "target engine: $($PSVersionTable.PSVersion)"'
+
+      # 同一份脚本必须在 5.1 与 7.x 下都通过（AGENTS.md 的验收标准）。
+      - name: Run test suite on ${{ matrix.engine }}
+        shell: pwsh
+        run: .\tests\run-tests.ps1 -Engine ${{ matrix.engine }}
+
+      # 测试是只读的：跑完仓库必须干净。这条能抓出"测试偷偷改了工作区"（比如自动补 BOM）。
+      - name: Assert the tests did not modify the checkout
+        shell: pwsh
+        run: |
+          git status --porcelain
+          if (git status --porcelain) { throw 'tests modified the repository (they must be read-only)' }
