@@ -29,7 +29,10 @@ Test-Case '映射用数组表达（psd1 不允许 [ordered]，数组才保得住
     Assert-NotMatch $text '\$pathMapBase = \[ordered\]' 'pathMapBase 不应用 [ordered]'
 }
 
-# ---- 抽出真实的 Convert-MappedPath 来测行为 ----
+# ---- 抽出真实的 Convert-MappedPath 与它依赖的助手来测行为 ----
+# 注意：AST 抽取只拿**指定那一个**函数的定义，不会自动带上它调用的其它函数。
+# 第一次加 Replace-PathLiteral 时忘了抽它，于是 6 条断言一起报"术语 ... 不是函数"。
+Invoke-Expression (Get-ScriptFunctionText -Path $target -Name 'Replace-PathLiteral')
 Invoke-Expression (Get-ScriptFunctionText -Path $target -Name 'Convert-MappedPath')
 
 $pathMap = [ordered]@{
@@ -66,6 +69,30 @@ Test-Case '用户目录两条映射里，带尾反斜杠的那条先命中' {
 Test-Case '大小写不敏感匹配（注册表里路径大小写很乱）' {
     $r = Convert-MappedPath -Text 'c:\APP\resources\x.ico'
     Assert-Equal $r 'D:\New\app-3.19.0\resources\x.ico' '应当忽略大小写'
+}
+
+Test-Case '替换串里的 $ 必须当字面量（否则含 $ 的路径会被静默写错）' {
+    # [regex]::Replace 的替换串把 $ 当特殊字符（$1/$&/$$…）。写 mapping 测试时发现
+    # 原实现直接把 $pathMap[$old] 当替换串传进去，所以映射到含 $ 的路径会写错。
+    $saved = $script:pathMap
+    try {
+        $script:pathMap = [ordered]@{ 'C:\App' = 'D:\Apps\$Recycle\bin' }
+        $r = Convert-MappedPath -Text 'C:\App\x.exe'
+        Assert-Equal $r 'D:\Apps\$Recycle\bin\x.exe' '替换串里的 $ 必须原样输出'
+    } finally {
+        $script:pathMap = $saved
+    }
+}
+
+Test-Case '替换串里的 $& / $1 之类也不会被展开' {
+    $saved = $script:pathMap
+    try {
+        $script:pathMap = [ordered]@{ 'C:\App' = 'D:\x$1y$&z' }
+        $r = Convert-MappedPath -Text 'C:\App\f.txt'
+        Assert-Equal $r 'D:\x$1y$&z\f.txt' '$1 与 $& 都必须原样输出'
+    } finally {
+        $script:pathMap = $saved
+    }
 }
 
 Complete-TestRun 'repair.mapping'

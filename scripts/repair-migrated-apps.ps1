@@ -97,20 +97,31 @@ foreach ($e in $localProfileMap) {
     if ($e -and $e.Old) { $profileMap[[string]$e.Old] = [string]$e.New }
 }
 
+# 把 Old 替换成 New（忽略大小写）。必须转义 New 里的 `$`：正则替换串把 `$` 当特殊字符。
+# 实测（见 tests\repair.mapping.tests.ps1）：
+#   * `$&`（整个匹配）、`` $` ``、`$'`、`$+`、`$_` **在任何模式里都有效**，会被真的替换掉 ——
+#     例如 New = 'D:\x$&y' 会把"被替换掉的旧路径"插进去，写出完全错误的字符串
+#   * `$$` -> 一个 `$`
+#   * `$1`、`$Recycle` 这类不存在的组，.NET 当字面量留着 —— 所以**不是每种写法都会暴露问题**，
+#     正因为如此这个坑更容易被漏掉
+function Replace-PathLiteral([string]$Text, [string]$Old, [string]$New) {
+    return [regex]::Replace($Text, [regex]::Escape($Old), ([string]$New).Replace('$', '$$'), 'IgnoreCase')
+}
+
 function Convert-MappedPath {
     param([string]$Text, [switch]$WithProfileMap)
     $result = $Text
     $hit = $false
     foreach ($old in $pathMap.Keys) {
         if ($result.IndexOf($old, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            $result = [regex]::Replace($result, [regex]::Escape($old), $pathMap[$old], 'IgnoreCase')
+            $result = Replace-PathLiteral $result $old $pathMap[$old]
             $hit = $true
         }
     }
     if ($WithProfileMap) {
         foreach ($old in $profileMap.Keys) {
             if ($result.IndexOf($old, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-                $result = [regex]::Replace($result, [regex]::Escape($old), $profileMap[$old], 'IgnoreCase')
+                $result = Replace-PathLiteral $result $old $profileMap[$old]
                 $hit = $true
             }
         }
