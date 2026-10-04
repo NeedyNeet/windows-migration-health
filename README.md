@@ -3,6 +3,7 @@
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%20%7C%207.x-5391FE)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
 ![License](https://img.shields.io/badge/license-MIT-green)
+[![ci](https://github.com/NeedyNeet/windows-migration-health/actions/workflows/ci.yml/badge.svg)](https://github.com/NeedyNeet/windows-migration-health/actions/workflows/ci.yml)
 
 Windows **「程序位置登记」一致性**工具集：核对并修复那些"登记指向的东西已经不在"的地方，附带长期健康体检。
 
