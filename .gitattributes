@@ -1,10 +1,15 @@
 # 统一行尾，避免 clone 后 .cmd/.ps1 无法执行
 * text=auto
-*.cmd text eol=crlf
-*.ps1 text eol=crlf
-*.reg text eol=crlf
-*.md  text eol=lf
-*.json text eol=lf
-# 二进制/产物不参与 diff
-*.png binary
-*.xlsx binary
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+*.psd1  text eol=crlf
+*.md    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+# 二进制/产物：不参与 diff，也**不做行尾转换**
+# *.reg 必须是 binary —— reg export 写的是 UTF-16LE（实测首 4 字节 FF FE 57 00），
+# 按文本处理会被行尾转换直接破坏。
+*.reg   binary
+*.png   binary
+*.xlsx  binary

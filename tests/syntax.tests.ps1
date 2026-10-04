@@ -15,7 +15,7 @@ function Get-ParseErrors([string]$Path) {
     return @($errors)
 }
 
-$scriptPs1 = @(Get-ChildItem (Join-Path $repo 'scripts') -File -Filter *.ps1 -ErrorAction SilentlyContinue)
+$scriptPs1 = @(Get-ChildItem (Join-Path $repo 'scripts') -File -Filter *.ps1 -Recurse -ErrorAction SilentlyContinue)
 $testPs1   = @(Get-ChildItem (Join-Path $repo 'tests')   -File -Filter *.ps1 -Recurse -ErrorAction SilentlyContinue)
 $configPsd1 = @(Get-ChildItem (Join-Path $repo 'config') -File -Filter *.psd1 -ErrorAction SilentlyContinue)
 $localPsd1  = @(Get-ChildItem (Join-Path $repo 'local')  -File -Filter *.local.psd1 -ErrorAction SilentlyContinue)

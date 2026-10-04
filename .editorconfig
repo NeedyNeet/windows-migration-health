@@ -1,0 +1,42 @@
+# ============================================================================
+#  .editorconfig —— 把 AGENTS.md 里的硬性约定机器化
+#
+#  约定来源（都是真踩过的坑）：
+#    * .ps1 / .psd1 必须 UTF-8 **带 BOM**：Windows PowerShell 5.1 读无 BOM 文件会按
+#      ANSI（系统代码页）解码 -> 中文注释全乱码 -> 报出上百个**假**语法错误。
+#      实测：一个 400 行脚本能报出 55 个假错，而 pwsh 7 完全正常（坑只在 5.1 暴露）。
+#    * .cmd 必须 CRLF：LF-only 批处理在 goto/标签上的行为不可靠。
+#    * .cmd 内容必须纯 ASCII：cmd.exe 按代码页读批处理，中文注释会变成 ?。
+#      （ASCII 这一条 EditorConfig 表达不了，由 tests\encoding.tests.ps1 守住。）
+#
+#  注意：EditorConfig 只在编辑器支持时生效，它不是保证层。
+#  保证层是 tests\encoding.tests.ps1（本地随时可跑）+ .github/workflows/ci.yml（干净检出上跑）。
+# ============================================================================
+root = true
+
+[*]
+end_of_line = lf
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.ps1]
+end_of_line = crlf
+charset = utf-8-bom
+
+[*.psd1]
+end_of_line = crlf
+charset = utf-8-bom
+
+# 不带 BOM：cmd.exe 会把 BOM 当成命令的一部分
+[*.cmd]
+end_of_line = crlf
+charset = utf-8
+
+# Markdown 用行尾两个空格表示换行，不能裁掉尾随空白
+[*.md]
+end_of_line = lf
+trim_trailing_whitespace = false
+
+[*.{json,yml,yaml}]
+end_of_line = lf

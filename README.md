@@ -85,6 +85,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 | 路径 | 内容 |
 |---|---|
 | [scripts/](scripts/) | 现行脚本（3 个 `.ps1` + 3 个 `.cmd` 启动器） |
+| [scripts/dev/fix-encoding.ps1](scripts/dev/fix-encoding.ps1) | **开发工具**：补 BOM、统一 `.cmd` 行尾（默认试运行） |
 | [docs/](docs/README.md) | **文档索引**：四篇文档该看哪篇 |
 | [docs/disk-health.md](docs/disk-health.md) | **磁盘长期健康管理**：各盘放什么、体检阈值、安全清理清单、备份 3-2-1、例行节奏 |
 | [docs/migration-checklist.md](docs/migration-checklist.md) | **大批量迁移避坑清单**：阶段 0~3（该不该迁 → 基线快照 → robocopy → 复检登记与验收）+ 台账模板 |

@@ -81,6 +81,7 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
 # 改完任何东西，先跑测试：双引擎、含语法校验与编码卫生
 .\tests\run-tests.cmd               # 或 .\tests\run-tests.ps1 [-Engine pwsh|powershell] [-Test encoding]
                                     # 在每个可用引擎下各跑一遍 tests\*.tests.ps1；退出码 0=全通过
+.\scripts\dev\fix-encoding.ps1 -Apply   # 测试若报"缺 BOM / 行尾不对"：用它修（默认试运行）
 
 .\scripts\health-check.cmd          # 只读体检（报告进 local\reports）
 .\scripts\health-fix.cmd            # 清理试运行
@@ -112,8 +113,12 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
 
 ### 硬性约定（都是踩过的坑）
 
-1. **`.ps1` 必须 UTF-8 带 BOM**：5.1 读无 BOM 脚本会按 ANSI 解码 → 中文全乱码 → 报出上百个**假**语法错误（PS7 能读无 BOM，所以这个坑只在 5.1 暴露）。用编辑器改完请补 BOM：
-   `[IO.File]::WriteAllText($p,[IO.File]::ReadAllText($p),(New-Object Text.UTF8Encoding($true)))`
+1. **`.ps1` 必须 UTF-8 带 BOM**：5.1 读无 BOM 脚本会按 ANSI 解码 → 中文全乱码 → 报出上百个**假**语法错误（PS7 能读无 BOM，所以这个坑只在 5.1 暴露）。**多数文本写入工具（编辑器、批量替换、AI 编辑工具）都会把 BOM 丢掉**——实测一次文本编辑就能复现 55 个假错。改完跑一次：
+   ```powershell
+   .\scripts\dev\fix-encoding.ps1            # 试运行：只报告会改什么
+   .\scripts\dev\fix-encoding.ps1 -Apply     # 补 BOM，并统一 .cmd 的行尾
+   ```
+   它只自动处理**能机械判定**的（BOM、`.cmd` 行尾）；`.cmd` 里的中文、裸 CR / BEL 只报告，需人工判断原意。真正的保证层是 `tests\encoding.tests.ps1` + CI。
 2. **`.cmd` 只用 ASCII 注释**（批处理按代码页读，中文会变 `?`）；中文只留给 `.ps1`。
 3. **禁止按 .NET 异常类型 `catch`**（如 `catch [System.IO.FileNotFoundException]`）：PS7 把 .NET 异常包成 `MethodInvocationException`/`RuntimeException`，类型匹配**永远不成立** → 所有"缺失"会被误判成"读不到"，报告变成假阴性。统一用脚本里的 `Get-ExceptionClass`（解包 `InnerException` 后按**类型名**判断）。
 4. **"读不到" ≠ "不存在"**：`denied` 一律跳过；`\WindowsApps\`、`\DriverStore\` 直接不判定。**绝不把权限问题当残留删除。**

@@ -24,3 +24,7 @@ reports/
 Thumbs.db
 desktop.ini
 $RECYCLE.BIN/
+
+# 注册表备份：UTF-16LE（按文本处理会被行尾转换破坏），且必然含个人路径。
+# local/* 已经覆盖了正常位置，这里是兜底：任何位置的 .reg 都不该进仓库。
+*.reg
