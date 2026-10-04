@@ -290,7 +290,9 @@ if ($prevObj) {
     }
 } else {
     W ''
-    W '（首次运行：已保存基线快照，下次体检将显示增长对比）'
+    # 只有真的会写盘时才说"已保存"（-NoHistory 下不能假报，否则读者会以为已有基线可比）
+    if ($NoHistory) { W '（本次用了 -NoHistory：**未保存**基线快照，下次体检仍无法对比增长）' }
+    else            { W '（首次运行：已保存基线快照，下次体检将显示增长对比）' }
 }
 foreach ($d in $drives) {
     if ($d.FreePct -lt $WarnFreePercent) {
