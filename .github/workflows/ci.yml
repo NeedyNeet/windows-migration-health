@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Show engine versions
-        shell: ${{ matrix.engine }}
+        shell: pwsh
         run: |
           Write-Output "harness engine: $($PSVersionTable.PSVersion)"
           & ${{ matrix.engine }} -NoProfile -Command 'Write-Output "target engine: $($PSVersionTable.PSVersion)"'
@@ -27,14 +27,22 @@ jobs:
       # SLOW_TESTS=1 启用慢速集成测试（真跑一次完整体检，约 2 分钟/引擎）：
       # 本地默认跳过以保持迭代速度，CI 上必须跑。
       - name: Run test suite on ${{ matrix.engine }}
-        shell: ${{ matrix.engine }}
+        shell: pwsh
         env:
           SLOW_TESTS: '1'
-        run: .\tests\run-tests.ps1 -Engine ${{ matrix.engine }}
+        # 注意：**不要**把上面写成 `shell: ${{ matrix.engine }}` —— GitHub Actions 在**解析期**
+# 就拒绝带表达式的 shell，整条工作流会以 "workflow file issue" 启动失败（0 个 job、无日志）。
+# 所以 shell 固定 pwsh，改由这里显式调用矩阵指定的引擎 —— 目的同样是让 run-tests.ps1
+# **自己**也跑在该引擎下，而不是"用 pwsh 主持、只让子进程用 5.1"。
+        run: |
+          & ${{ matrix.engine }} -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1 -Engine ${{ matrix.engine }}
+          $rc = $LASTEXITCODE
+          if ($null -eq $rc) { throw '被调用的引擎没有返回退出码 —— 视为失败' }
+          exit $rc
 
       # 测试是只读的：跑完仓库必须干净。这条能抓出"测试偷偷改了工作区"（比如自动补 BOM）。
       - name: Assert the tests did not modify the checkout
-        shell: ${{ matrix.engine }}
+        shell: pwsh
         run: |
           git status --porcelain
           if (git status --porcelain) { throw 'tests modified the repository (they must be read-only)' }

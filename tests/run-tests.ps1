@@ -75,6 +75,7 @@ if ($Test) { $suites = @($suites | Where-Object { $_.Name -like ('*' + $Test + '
 if ($suites.Count -eq 0) { Write-Output ('没有匹配 "{0}" 的测试套件。' -f $Test); exit 2 }
 
 Write-Output ("仓库根：{0}" -f $repo)
+Write-Output ("运行器宿主：PowerShell {0} ({1})" -f $PSVersionTable.PSVersion, $PSVersionTable.PSEdition)
 Write-Output ("套件：{0}" -f (($suites | ForEach-Object { $_.Name }) -join ', '))
 
 $pass = 0
