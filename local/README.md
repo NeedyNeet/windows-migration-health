@@ -25,4 +25,4 @@ notepad .\local\rollback\deleted-registry-keys-*.txt
 ```
 
 > 注意：`.reg` 备份是"改动**之前**的状态"，导入即回滚。导入前请确认你确实要回滚那一项。
-> 历史提示：早期版本的 epair-migrated-apps.ps1 把备份写在桌面 pps-repair-backup/（本机 92 个 .reg）；新版已统一写入本目录。
+> 历史提示：早期版本的 repair-migrated-apps.ps1 把备份写在桌面上的 Apps-repair-backup/ 目录（本机 92 个 .reg）；新版已统一写入本目录。
