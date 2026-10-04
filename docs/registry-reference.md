@@ -59,14 +59,19 @@ reg query "HKLM\Software\Microsoft\Windows\CurrentVersion" /f "D:\mpv-lazy" /s
 
 | 脚本 | 覆盖范围 |
 |---|---|
-| `scripts/health-check.ps1`（只读体检） | 逐类核对上表 **1–12 类**的目标是否存在 → 输出 `report.md`（人读）+ `findings.csv`（逐条明细）；另外检查孤儿安装缓存、旧路径残留、磁盘容量与增长 |
-| `scripts/health-fix.ps1`（按规则清理） | A 段改路径（程序搬走）→ B 段删已卸载软件的记录/服务/协议 → C 段清"指向已删 ProgID"的引用与图标覆盖 → D 段清悬空引用；每条改动前 `reg export` 备份 |
-| `scripts/repair-migrated-apps.ps1`（迁移批量改写） | 按脚本顶部 `$pathMap`（旧→新映射表）改写上表 1/2/4/8/9/12 类，并用 `reg query` 发现更多引用点；写入前检查目标文件是否真的存在 |
+| `scripts/health-check.ps1`（只读体检） | 逐类核对上表 **1–12 类**的目标是否存在 → 输出 `report.md`（人读）+ `findings.csv`（逐条明细）；另外检查孤儿安装缓存、旧路径残留、磁盘容量与增长。**没查到的会明说**：清单为空/全是占位符、或用了 `-Skip*` 开关时，报告写"本节未执行检查"并记入 `findings.csv`，不会给绿勾 |
+| `scripts/health-fix.ps1`（按规则清理） | A 段改路径（程序搬走）→ B 段删已卸载软件的记录/服务/协议 → C 段清"指向已删 ProgID"的引用与图标覆盖 → D 段清悬空引用。判据统一是 `Test-Missing`（目标确实不存在才动手）；每条改动前 `reg export` 到 `local/rollback/<运行时间戳>/`，**备份失败则该条改动被跳过** |
+| `scripts/repair-migrated-apps.ps1`（迁移批量改写） | 按 `local\repair-migrated-apps.local.psd1` 的"旧→新"映射改写上表 1/2/4/8/9/12 类，并用 `reg query` 发现更多引用点；写入前检查目标文件是否真的存在（`Test-Exists`） |
 
-判定原则（两个脚本共用）：
+**执行顺序**：`health-check` → `repair-migrated-apps` → 再 `health-check` 复检 → 最后 `health-fix`。
+顺序反了会白干：`health-fix` 会把"目标暂时找不到"的记录直接删掉，而那条记录本来正是
+`repair-migrated-apps` 要改写回来的。
 
-- **"读不到" ≠ "不存在"**：权限受限的路径判为 `denied` 并跳过，绝不当作残留删除。
+判定原则（三个脚本共用）：
+
+- **"读不到" ≠ "不存在"**：权限受限的路径判为 `denied` / 用 `Test-Exists` 判为存在，绝不当作残留删除。
 - **`\WindowsApps\`、`\DriverStore\`** 对普通用户不可读，直接不判定。
+- **报告不许有假绿**：空清单、全是占位符、被 `-Skip*` 跳过的节，都要显式说出来。
 - 报告按"不存在的目标"聚合，避免几百行噪音淹没真问题。
 
 ---
