@@ -15,6 +15,7 @@
 
 $script:TkLibDir   = $PSScriptRoot
 $script:TkChecks   = 0
+$script:TkSkips    = 0
 $script:TkFailures = New-Object System.Collections.Generic.List[string]
 
 # 仓库根：tests/lib/ -> tests/ -> 仓库根
@@ -48,8 +49,15 @@ function Assert-NotMatch([string]$Text, [string]$Pattern, [string]$Message) {
     if ($Text -match $Pattern) { throw ("{0}（不该匹配 {1}）" -f $Message, $Pattern) }
 }
 
+# 显式跳过：慢速 / 依赖环境的测试用它登记。
+# 刻意让"跳过"在输出里可见、并在结尾计入统计 —— 静默跳过本身也是一种假绿。
+function Skip-Test([string]$Name, [string]$Reason) {
+    $script:TkSkips++
+    Write-Output ("  [SKIP] {0} -- {1}" -f $Name, $Reason)
+}
+
 function Complete-TestRun([string]$SuiteName) {
-    Write-Output ("  {0}: 共 {1} 项检查，{2} 项失败" -f $SuiteName, $script:TkChecks, $script:TkFailures.Count)
+    Write-Output ("  {0}: 共 {1} 项检查，{2} 项失败，{3} 项跳过" -f $SuiteName, $script:TkChecks, $script:TkFailures.Count, $script:TkSkips)
     if ($script:TkFailures.Count -gt 0) {
         $script:TkFailures | ForEach-Object { Write-Output ("    ! " + $_) }
         Write-Output '##RESULT: FAIL'

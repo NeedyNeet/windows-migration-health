@@ -14,7 +14,10 @@
     .\tests\run-tests.ps1                   # 装了哪个引擎就跑哪个（通常两个都跑）
     .\tests\run-tests.ps1 -Engine pwsh      # 只跑 PowerShell 7
     .\tests\run-tests.ps1 -Engine powershell
-    .\tests\run-tests.ps1 -Test encoding    # 只跑文件名以 encoding 开头的套件
+    .\tests\run-tests.ps1 -Test needles     # 只跑名字**包含**该串的套件（如 -Test encoding / needles / mapping）
+
+  慢速测试：个别套件含"真跑一次完整体检"级别的集成测试（约 2 分钟/引擎），默认跳过并
+  在输出里登记为 [SKIP]。设 $env:DSH_TESTS_SLOW=1 启用 —— CI 上默认启用。
 
   退出码：0 = 全通过；1 = 有失败；2 = 环境/参数问题（没有匹配的套件或找不到引擎）。
 #>
@@ -37,8 +40,9 @@ if ($candidates.Count -eq 0) {
 }
 
 $suites = @(Get-ChildItem -LiteralPath $testsDir -File -Filter '*.tests.ps1' | Sort-Object Name)
-if ($Test) { $suites = @($suites | Where-Object { $_.Name -like ($Test + '*') }) }
-if ($suites.Count -eq 0) { Write-Output '没有匹配的测试套件。'; exit 2 }
+# 名字"包含"即可：套件名形如 health-check.needles.tests.ps1，-Test needles 也要能命中
+if ($Test) { $suites = @($suites | Where-Object { $_.Name -like ('*' + $Test + '*') }) }
+if ($suites.Count -eq 0) { Write-Output ('没有匹配 "{0}" 的测试套件。' -f $Test); exit 2 }
 
 Write-Output ("仓库根：{0}" -f $repo)
 Write-Output ("套件：{0}" -f (($suites | ForEach-Object { $_.Name }) -join ', '))
