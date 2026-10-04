@@ -17,7 +17,7 @@ $target = Join-Path $repo 'scripts\repair-migrated-apps.ps1'
 
 Invoke-Expression (Get-ScriptFunctionText -Path $target -Name 'Test-Exists')
 
-$tmp = Join-Path ([IO.Path]::GetTempPath()) ('dsh-ex-' + [guid]::NewGuid().ToString('N'))
+$tmp = Join-Path ([IO.Path]::GetTempPath()) ('wmh-ex-' + [guid]::NewGuid().ToString('N'))
 try {
     $null = New-Item -ItemType Directory -Path $tmp -Force
     $fileExists = Join-Path $tmp 'exists.txt'

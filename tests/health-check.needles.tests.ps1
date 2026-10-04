@@ -35,14 +35,14 @@ Test-Case '只要有一条真实路径 -> ok' {
     Assert-Equal (Get-NeedlesState @('D:\mpv-lazy')) 'ok' '真实路径应为 ok'
 }
 
-if (-not $env:DSH_TESTS_SLOW) {
+if (-not $env:SLOW_TESTS) {
     Skip-Test '集成：空清单时必须报"未执行有效检查"，且不得出现"回归检查通过"' `
-        '真跑一次完整体检约 2 分钟/引擎；设 $env:DSH_TESTS_SLOW=1 启用（CI 上默认启用）'
+        '真跑一次完整体检约 2 分钟/引擎；设 $env:SLOW_TESTS=1 启用（CI 上默认启用）'
 } else {
     Test-Case '集成：空清单时必须报"未执行有效检查"，且不得出现"回归检查通过"' {
         # 用当前正在跑的引擎去跑被测脚本，于是两个引擎下都会各测一遍
         $engine = if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh' } else { 'powershell' }
-        $tmp = Join-Path ([IO.Path]::GetTempPath()) ('dsh-hc-' + [guid]::NewGuid().ToString('N'))
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ('wmh-hc-' + [guid]::NewGuid().ToString('N'))
         try {
             $null = New-Item -ItemType Directory -Path (Join-Path $tmp 'scripts') -Force
             Copy-Item -LiteralPath $target -Destination (Join-Path $tmp 'scripts\health-check.ps1')

@@ -20,7 +20,7 @@ $repo = Get-RepoRoot
 
 Test-Case '框架自己丢 BOM 时，套件必须明确失败（不能静默通过）' {
     $engine = if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh' } else { 'powershell' }
-    $root = Join-Path ([IO.Path]::GetTempPath()) ('dsh-canary-' + [guid]::NewGuid().ToString('N'))
+    $root = Join-Path ([IO.Path]::GetTempPath()) ('wmh-canary-' + [guid]::NewGuid().ToString('N'))
     try {
         $null = New-Item -ItemType Directory -Path $root -Force
         # 把整个 tests\ 复制到隔离目录后动手脚，绝不碰仓库里的原件
@@ -58,4 +58,12 @@ Test-Case 'pre-commit 钩子的判据与运行器一致' {
     Assert-Match $t '##RESULT: PASS' '钩子没有要求出现 ##RESULT: PASS'
 }
 
+Test-Case '运行器在启动引擎前会自检"能不能启动并捕获"' {
+    # 实测事故：MSIX（Microsoft Store）版 pwsh 被 5.1 启动时是"应用激活"而不是子进程 ——
+    # 重定向得到 0 字节、$LASTEXITCODE 为空，于是 8 个全过的套件被报成 8/8 失败。
+    # 自检块看着像"多余的一步"，所以钉住它，防止将来被当成冗余删掉。
+    $t = [IO.File]::ReadAllText((Join-Path $repo 'tests\run-tests.ps1'))
+    Assert-Match $t 'wmh-probe-ok' '看不到"引擎可启动性自检"'
+    Assert-Match $t '\[跳过\] 引擎' '自检失败时没有明确的跳过提示（会退回成假红）'
+}
 Complete-TestRun 'harness.canary'

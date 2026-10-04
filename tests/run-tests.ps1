@@ -17,7 +17,7 @@
     .\tests\run-tests.ps1 -Test needles     # 只跑名字**包含**该串的套件（如 -Test encoding / needles / mapping）
 
   慢速测试：个别套件含"真跑一次完整体检"级别的集成测试（约 2 分钟/引擎），默认跳过并
-  在输出里登记为 [SKIP]。设 $env:DSH_TESTS_SLOW=1 启用 —— CI 上默认启用。
+  在输出里登记为 [SKIP]。设 $env:SLOW_TESTS=1 启用 —— CI 上默认启用。
 
   退出码：0 = 全通过；1 = 有失败；2 = 环境/参数问题（没有匹配的套件或找不到引擎）。
 #>
@@ -39,6 +39,36 @@ if ($candidates.Count -eq 0) {
     exit 2
 }
 
+# 逐个引擎先做一次"真能启动并被捕获"的自检 —— 这一步不能省。
+# 如果 pwsh 只有 Microsoft Store（MSIX）版，从 5.1 启动它是一次"应用激活"而不是子进程：
+# 实测重定向得到 0 字节文件、$LASTEXITCODE 为空，于是每个套件都会被判成"没有输出 ##RESULT"
+# ——8 个全过的套件被报成 8/8 失败。宁可明确跳过，也不能让运行器撒谎。
+$usable = @()
+foreach ($eng in $candidates) {
+    $probeFile = Join-Path ([IO.Path]::GetTempPath()) ('wmh-probe-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $probeText = ''
+    try {
+        & $eng -NoProfile -ExecutionPolicy Bypass -Command 'Write-Output "wmh-probe-ok"' > $probeFile 2>&1
+        if (Test-Path -LiteralPath $probeFile) {
+            $probeText = [IO.File]::ReadAllText($probeFile, (New-Object Text.UTF8Encoding($false)))
+        }
+    } catch { $probeText = '' }
+    finally { Remove-Item -LiteralPath $probeFile -Force -ErrorAction SilentlyContinue }
+
+    if ($probeText -match 'wmh-probe-ok') { $usable += $eng }
+    else {
+        Write-Output ('  [跳过] 引擎 {0}：无法被本进程启动并捕获输出。' -f $eng)
+        Write-Output '         常见原因：pwsh 只有 Microsoft Store（MSIX）版，而本运行器正跑在 5.1 下。'
+        Write-Output '         MSIX 应用是被"激活"的、不是子进程 —— 拿不到 stdout 和退出码。'
+        Write-Output '         解决：用 pwsh 运行本运行器，或安装 MSI/zip 版 PowerShell 7。'
+    }
+}
+if ($usable.Count -eq 0) {
+    Write-Output '没有任何可用的引擎，无法测试。'
+    exit 2
+}
+$candidates = $usable
+
 $suites = @(Get-ChildItem -LiteralPath $testsDir -File -Filter '*.tests.ps1' | Sort-Object Name)
 # 名字"包含"即可：套件名形如 health-check.needles.tests.ps1，-Test needles 也要能命中
 if ($Test) { $suites = @($suites | Where-Object { $_.Name -like ('*' + $Test + '*') }) }
@@ -58,10 +88,10 @@ foreach ($eng in $candidates) {
     foreach ($s in $suites) {
         Write-Output ('--- {0} ---' -f $s.Name)
 
-        $tmp = Join-Path ([IO.Path]::GetTempPath()) ('dsh-tk-' + [guid]::NewGuid().ToString('N') + '.txt')
-        $env:DSH_TESTKIT_SUITE = $s.FullName
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ('wmh-tk-' + [guid]::NewGuid().ToString('N') + '.txt')
+        $env:WIMH_SUITE = $s.FullName
         $cmd = 'try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch {}; ' +
-               '$OutputEncoding = [Text.UTF8Encoding]::new($false); & $env:DSH_TESTKIT_SUITE'
+               '$OutputEncoding = [Text.UTF8Encoding]::new($false); & $env:WIMH_SUITE'
 
         & $eng -NoProfile -ExecutionPolicy Bypass -Command $cmd > $tmp 2>&1
         $code = $LASTEXITCODE
