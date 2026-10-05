@@ -184,7 +184,7 @@ findstr /s /i /m /c:"D:\mpv-lazy" D:\Apps\*.*
 - [ ] 开机自启仍生效
 - [ ] 用户目录与目标盘都没出现"空的同名目录"（那是搬走后留下的空壳）
 
-> 本仓库的 `scripts/repair-migrated-apps.ps1` **默认就是试运行**：把它当"引用体检"工具，先跑一次看输出（哪些键还指向旧路径、哪些目标文件不存在），确认后再 `-Apply`。换一次迁移就改一次 `local\repair-migrated-apps.local.psd1` 里的映射表即可复用（模板见 `config\repair-migrated-apps.local.example.psd1`）。
+> 本仓库的 `scripts/repair-migrated-apps.ps1` **默认就是试运行**：把它当"引用体检"工具，先跑一次看输出（哪些键还指向旧路径、哪些目标文件不存在），确认后再 `-Apply`。换一次迁移就改一次 `local\repair-migrated-apps.local.psd1` 里的映射表即可复用（模板见 `config\repair-migrated-apps.local.example.psd1`）。脚本里**不内置任何具体路径**，所以映射表为空时它会明确报"未执行有效检查"并以退出码 3 结束 —— 那是"没查"，不是"没事"。
 
 ---
 

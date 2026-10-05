@@ -1,10 +1,13 @@
 ﻿# repair-migrated-apps.ps1
-# Repairs Windows registrations for applications whose files were moved into D:\Apps.
+# Repairs Windows registrations for applications whose files were moved somewhere else.
 #
-# Symptom it fixes: the app files live in D:\Apps\..., but Windows still points at the
-# ORIGINAL install paths (C:\Program Files (x86)\..., C:\Users\<old-name>\..., D:\JetBrains\...).
-# Windows therefore cannot find the app: search does not find it, double-clicking a
+# Symptom it fixes: the app files now live at a NEW location, but Windows still points at the
+# ORIGINAL install path, so it cannot find the app: search does not find it, double-clicking an
 # associated file fails, and Settings > Apps shows a dead entry.
+#
+# 映射表（旧路径 -> 新路径）**不在本文件里**：它是机器专属值，放
+#   local\repair-migrated-apps.local.psd1（模板 config\repair-migrated-apps.local.example.psd1）。
+# 没配置映射时本脚本会明确报"未执行有效检查"并以退出码 3 结束 —— 那是"没查"，不是"没事"。
 #
 # Default is DRY RUN: nothing is written, every planned change is printed.
 #   powershell -ExecutionPolicy Bypass -File .\repair-migrated-apps.ps1
@@ -63,44 +66,93 @@ function Test-Exists([string]$p) {
 $script:CfgPath = Join-Path $RepoRoot 'local\repair-migrated-apps.local.psd1'
 $script:Cfg = $null
 if (Test-Exists $script:CfgPath) {
-    # Import-PowerShellDataFile 只读数据、不执行代码，5.1 与 7.x 都可用
-    $script:Cfg = Import-PowerShellDataFile -LiteralPath $script:CfgPath
+    # Import-PowerShellDataFile 只读数据、不执行代码，5.1 与 7.x 都可用。
+    # 但**解析失败是非终止错误**：在 $ErrorActionPreference='Continue' 下它只往 stderr 丢一条，
+    # 赋值落空成 $null —— 于是"配置写坏了"被当成"没有配置"，脚本继续跑完并报"本机已无需改指"。
+    # 那正是本项目最危险的假绿（报告说没事，其实一条都没查），所以这里自己接住并致命退出。
+    try {
+        $script:Cfg = Import-PowerShellDataFile -LiteralPath $script:CfgPath -ErrorAction Stop
+    } catch {
+        Write-Output ("ERROR: 读不了本机配置 {0}" -f $script:CfgPath)
+        Write-Output ("       {0}" -f $_.Exception.Message)
+        Write-Output '       先修好语法（模板见 config\repair-migrated-apps.local.example.psd1）再重跑。'
+        Write-Output '       **本次未执行有效检查** —— 不要把它读成"本机无需改指"。'
+        exit 3
+    }
 } else {
-    Write-Output ("note: {0} not found - only the built-in generic mappings are used." -f $script:CfgPath)
+    Write-Output ("note: {0} not found - 本机映射未配置（模板见 config\repair-migrated-apps.local.example.psd1）。" -f $script:CfgPath)
 }
 
 # ---------------------------------------------------------------- path mapping
 # Old (registered) path prefix -> real current path.
-# 下面这批是**通用/非个人**的映射（旧安装位置 -> D:\Apps 布局），作为开箱可用的默认值。
-# 含个人信息的映射（旧用户目录名等）不在这里，改从 local\repair-migrated-apps.local.psd1 读，
-# 且本机条目优先。键名与写法见 config\repair-migrated-apps.local.example.psd1。
 #
-# 用「数组 + Old/New」而不是哈希表：映射是**顺序敏感**的——
-# 更具体的前缀必须排在更短的前面前面（quark 的资源在带版本号的 app-<version>
-# 子目录里，所以它那条必须优先于通用的 quark-cloud-drive 那条）。
-$pathMapBase = @(
-    @{ Old = 'C:\Program Files (x86)\quark-cloud-drive\resources'; New = 'D:\Apps\Installed\quark-cloud-drive\app-3.19.0\resources' },
-    @{ Old = 'C:\Program Files (x86)\NetEase\CloudMusic';          New = 'D:\Apps\Installed\NetEase\CloudMusic' },
-    @{ Old = 'C:\Program Files (x86)\quark-cloud-drive';           New = 'D:\Apps\Installed\quark-cloud-drive' },
-    @{ Old = 'D:\Apps\Portable\BCompare-zh-5.0.1.29877';           New = 'D:\Apps\Portable\BCompare-zh' },
-    @{ Old = 'D:\BCompare-zh-5.0.1.29877';                         New = 'D:\Apps\Portable\BCompare-zh' },
-    @{ Old = 'D:\IntelliJ IDEA 2024.2.2';                          New = 'D:\Apps\JetBrains\IntelliJ IDEA 2024.2.2' },
-    @{ Old = 'D:\JetBrains\';                                      New = 'D:\Apps\JetBrains\' },
-    @{ Old = 'D:\mpv-lazy';                                        New = 'D:\Apps\Portable\mpv-lazy' }
-)
-$localPathMap = if ($script:Cfg -and $script:Cfg.PathMap) { @($script:Cfg.PathMap) } else { @() }
-$pathMap = [ordered]@{}
-foreach ($e in ($localPathMap + $pathMapBase)) {                  # 本机条目在前（更具体）
-    if ($e -and $e.Old -and -not $pathMap.Contains([string]$e.Old)) { $pathMap[[string]$e.Old] = [string]$e.New }
+# 这个内置表**刻意是空的**：一条具体路径都不放。硬性约定 8 点名了"repair 的迁移映射表"必须
+# 放在 local\repair-migrated-apps.local.psd1，理由不是洁癖，是三条实测：
+#   1. 这张表天生是本机的。写死在脚本里，换台机器要么空转（旧前缀不存在），要么更糟 ——
+#      在别人机器上把指向旧位置的登记**改写成同样不存在的路径**：写入前的存在性校验只覆盖
+#      exe/dll/ico/com/bat/cpl/msc/sys 这类文件值，纯目录值（InstallLocation、WorkingDirectory、
+#      指向文件夹的 IconLocation）与 .png/.jar/.py/.url 这类扩展名**没有任何校验就写**；
+#   2. 带版本号的条目会腐烂（曾经写死过 app-3.19.0、IntelliJ IDEA 2024.2.2）。映射是"全表按序
+#      替换"，具体条目先命中 → 程序一升级就改到不存在的版本目录，而通用条目再也匹配不上；
+#   3. README 早就写着"脚本本身不含任何机器专属信息、迁移映射表在仓库版里是占位符"——
+#      留着这张表是代码欠文档的债。
+# 为什么保留这个空数组而不是删掉变量：合并处的形状（见 Merge-PathMap）与"0 条 = 未配置"的
+# 判定需要一个明确的位置，将来真有通用规则也往这里放（目前认为一条都没有）。
+#
+# 顺序敏感：更具体的旧前缀必须排在更短的前面（例如某程序的资源在带版本号的 app-<version>
+# 子目录里，那条必须优先于它的通用前缀那条）。psd1 不允许 [ordered]，所以顺序靠
+# 「数组 + Old/New」保住：本机条目排在前面，且**先到先得**。
+$pathMapBase = @()
+
+# 合并两张表：本机条目在前，先到先得（同一个 Old 以更具体的本机条目为准）。
+# 单独成函数是为了让测试够得着（AST 抽取只能抽函数）——这段逻辑曾经靠调用方"恰好"写对而工作：
+#     $localPathMap = if (...) { @($script:Cfg.PathMap) } else { @() }
+# 本机配置里只有 1 条映射时，if 的输出被去掉数组包装、退回成 Hashtable，
+# `$Hashtable + $Object[]` 抛 "A hash table can only be added to another hash table."；
+# 而 $ErrorActionPreference='Continue' 让它成为**非终止**错误：脚本继续跑，$pathMap 空着，
+# 最后打印 "(none: every registration already points at an existing path)" 并 exit 0 ——
+# 一条都没查，报告却说没事。修法两层：拼接两侧各包一次 @()（对任何形状都安全），
+# 并且返回值形状由 tests\repair.mapping.tests.ps1 锁死。
+function Merge-PathMap {
+    param($Local, $Base)
+    $map = [ordered]@{}
+    foreach ($e in (@($Local) + @($Base))) {
+        if ($e -and $e.Old -and -not $map.Contains([string]$e.Old)) { $map[[string]$e.Old] = [string]$e.New }
+    }
+    return $map
+}
+
+# 先初始化再赋值（与下面 $verifyPaths 的写法一致）。刻意**不**写成 `= if (...) {...}`：
+# 语句输出的数组在只有 1 个元素时会被拆包成单对象，见上面那段注释。
+$localPathMap = @()
+if ($script:Cfg -and $script:Cfg.PathMap) { $localPathMap = @($script:Cfg.PathMap) }
+$pathMap = Merge-PathMap -Local $localPathMap -Base $pathMapBase
+
+# 0 条映射 = **没有执行任何有效的路径检查**，绝不许退化成"本机已无需改指"（最典型的假绿）。
+# 分开说清楚：本机没配（正常，但必须明说）／配置里有条目却合并不出来（脚本自身故障）。
+if ($pathMap.Count -eq 0) {
+    Write-Output '⚠ **未执行有效检查**：没有任何"旧路径 -> 新路径"映射可用。'
+    if (@($localPathMap).Count -eq 0) {
+        Write-Output ("   本机映射未配置或为空：{0}" -f $script:CfgPath)
+        Write-Output '   模板见 config\repair-migrated-apps.local.example.psd1（一行一条：Old -> New）。'
+        Write-Output '   本次不会改写任何登记 —— 请不要把这份输出读成"本机已无需改指"。'
+    } else {
+        Write-Output ("   本机配置里有 {0} 条映射，合并后却是 0 条：这是脚本自身的故障，请报告。" -f @($localPathMap).Count)
+    }
+    exit 3
 }
 
 # The Windows profile folder was renamed too (e.g. C:\Users\<old-name> -> C:\Users\<user>).
 # Only applied inside HKCU\Software\Classes (URL handlers etc.), never to uninstall
 # records: rewriting a dead install path to another dead profile path helps nobody.
 # 这两个映射同样是机器专属，来自 local\repair-migrated-apps.local.psd1 的 ProfileMap。
-$localProfileMap = if ($script:Cfg -and $script:Cfg.ProfileMap) { @($script:Cfg.ProfileMap) } else { @() }
+# 同样是"先初始化再赋值"：做成 `= if (...)` 时，单条映射会退回成 Hashtable。
+# 这里眼下侥幸能工作（PowerShell 不枚举 Hashtable，单条时 $e 就是那个 Hashtable，
+# 而 $e.Old 走键查找恰好取到值），但不该靠这种巧合：改法一旦被复制到别处就复发。
+$localProfileMap = @()
+if ($script:Cfg -and $script:Cfg.ProfileMap) { $localProfileMap = @($script:Cfg.ProfileMap) }
 $profileMap = [ordered]@{}
-foreach ($e in $localProfileMap) {
+foreach ($e in @($localProfileMap)) {
     if ($e -and $e.Old) { $profileMap[[string]$e.Old] = [string]$e.New }
 }
 
@@ -241,66 +293,29 @@ function Set-ValueChecked {
     return 'FAILED'
 }
 
+# ---- 通用登记位置 ----------------------------------------------------------
+# 这里**只放"位置"，不放"本机的程序"**（硬性约定 8）。分两类：
+#   * 下面这张表 = Windows 自带的通用登记位置。它们**不在** Classes 子树里，discovery 的
+#     reg.exe 搜索覆盖不到，所以必须整棵走一遍（走整棵也是好事：位置里的任何程序都会被覆盖）。
+#   * 厂商条目（notion / xmind / cloudmusic.* / BeyondCompare.* / io.mpv* / Toolbox.* …）一律不列，
+#     交给下面的 discovery：它按"旧路径文本"搜 Classes 子树，找到的键更全，也不会随程序增删腐烂。
 $targets = @(
-    @{ Root = 'HKCU:\Software\Classes\notion';                     Profile = $true  }
-    @{ Root = 'HKCU:\Software\Classes\xmind';                      Profile = $true  }
-    @{ Root = 'HKCU:\Software\Classes\xmind-zen';                  Profile = $true  }
-    @{ Root = 'HKCU:\Software\Classes\Xmind Workbook';             Profile = $true  }
-    @{ Root = 'HKCU:\Software\Classes\QuarkCloudDrive.torrent';    Profile = $true  }
-    # NOTE: HKCU\Software\Classes\jetbrains (URL handler) is deliberately NOT rewritten:
-    # it points at the JetBrains Toolbox daemon, which no longer exists in the renamed
-    # profile. Reinstall JetBrains Toolbox (or delete that key) instead.
-    @{ Root = 'HKLM:\Software\Classes\BeyondCompare.SettingsPackage'; Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\BeyondCompare.Snapshot';      Profile = $false }
-    @{ Root = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\BCompare.exe';   Profile = $false }
-    @{ Root = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\cloudmusic.exe'; Profile = $false }
-    @{ Root = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths\mpv.exe';        Profile = $false }
-    @{ Root = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\BCompare.exe';   Profile = $false }
-    @{ Root = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\cloudmusic.exe'; Profile = $false }
-    @{ Root = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\mpv.exe';        Profile = $false }
-    @{ Root = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\mpv.exe';        Profile = $false }
-    # every cloudmusic.<ext> ProgID
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.mp3';  Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.flac'; Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.m4a';  Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.wav';  Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.ape';  Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.ogg';  Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.aac';  Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.wma';  Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.cda';  Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.cue';  Profile = $false }
-    @{ Root = 'HKLM:\Software\Classes\cloudmusic.ncm';  Profile = $false }
-    # JetBrains Toolbox registrations (one subkey per IDE)
-    @{ Root = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'; Profile = $false }
-    @{ Root = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall'; Profile = $false }
-    @{ Root = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'; Profile = $false }
-    # "Open with" registrations: Applications\<exe> holds the verbs Windows shows in the
-    # Open-with dialog and on the taskbar jump list (mpv-lazy registers mpv.exe there)
-    @{ Root = 'HKLM:\Software\Classes\Applications'; Profile = $false }
-    @{ Root = 'HKLM:\Software\WOW6432Node\Classes\Applications'; Profile = $false }
-    @{ Root = 'HKCU:\Software\Classes\Applications'; Profile = $false }
-    # AutoPlay handlers (mpv registers DVD / Blu-ray handlers) and its Default Programs entry
+    # "打开方式"与"应用路径"（App Paths 决定 exe 名字能不能直接运行/被搜索到）
+    @{ Root = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\App Paths';                 Profile = $false }
+    @{ Root = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths';     Profile = $false }
+    @{ Root = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths';                 Profile = $false }
+    # 卸载记录（"设置 -> 应用"里那条点了没反应的项）
+    @{ Root = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall';                 Profile = $false }
+    @{ Root = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall';                 Profile = $false }
+    @{ Root = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall';     Profile = $false }
+    # "打开方式"对话框与任务栏跳转列表里的动词
+    @{ Root = 'HKLM:\Software\Classes\Applications';                                      Profile = $false }
+    @{ Root = 'HKLM:\Software\WOW6432Node\Classes\Applications';                          Profile = $false }
+    @{ Root = 'HKCU:\Software\Classes\Applications';                                      Profile = $false }
+    # 自动播放处理程序与"默认程序"里的媒体客户端（走通用父键，任何程序都在内）
     @{ Root = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers'; Profile = $false }
-    @{ Root = 'HKLM:\Software\Clients\Media\mpv'; Profile = $false }
+    @{ Root = 'HKLM:\Software\Clients\Media';                                             Profile = $false }
 )
-
-# Any HKCU\Software\Classes\Toolbox.* key (IDE file-open handlers written by Toolbox)
-foreach ($k in (Get-ChildItem 'HKCU:\Software\Classes' -ErrorAction SilentlyContinue)) {
-    if ($k.PSChildName -like 'Toolbox.*') {
-        $targets += @{ Root = ('HKCU:\Software\Classes\' + $k.PSChildName); Profile = $true }
-    }
-}
-
-# mpv-lazy registers one ProgID per media type (io.mpv.<type>) straight into HKLM\Software\Classes.
-# NOTE: the canonical way to re-point those is to re-run mpv-lazy's own installer from its new
-# location ("<new path>\installer\mpv-install.bat" as admin); this loop is the fallback for
-# whatever that leaves behind.
-foreach ($k in (Get-ChildItem 'HKLM:\Software\Classes' -ErrorAction SilentlyContinue)) {
-    if ($k.PSChildName -like 'io.mpv*') {
-        $targets += @{ Root = ('HKLM:\Software\Classes\' + $k.PSChildName); Profile = $false }
-    }
-}
 
 # ------------------------------------------------------------------ discovery pass
 # Enumerating ProgIDs by hand kept missing places (context-menu verbs, CLSID in-proc shell
@@ -329,10 +344,16 @@ $discoveryRoots = @(
     'HKLM\Software\Classes',
     'HKLM\Software\WOW6432Node\Classes'
 )
-# Only the D:\Apps-migration prefixes. The renamed profile folder (C:\Users\<旧用户名>) is a
-# DIFFERENT and far wider problem: searching for it drags in every unrelated app that ever
-# lived in the old profile (GIMP, 360se, PowerToys, GitHub Desktop, ...) whose paths have no
-# valid new target, so it is deliberately kept out of this repair.
+# 搜索的关键词就是本机映射表里的旧前缀（表是空的就没得搜 —— 那种情况在上面已经致命退出了）。
+# 旧用户目录（C:\Users\<旧用户名>）是**另一个、宽得多**的问题：搜它会拖进所有曾在旧用户目录里
+# 待过的无关程序（GIMP、360se、PowerToys、GitHub Desktop…），而它们的路径没有有效的新目标，
+# 所以它刻意不进这一步；用户目录改名只走 ProfileMap（且只在 HKCU\Software\Classes 下生效）。
+#
+# 顺带一个不该被"发现"的坑：HKCU\Software\Classes\jetbrains（URL 处理器）指向 JetBrains Toolbox
+# 守护进程，那个进程在改名后的用户目录里已经不存在了 —— discovery 会找到它，但写入前的存在性
+# 校验会把它报成"修不了"而不是改成一个同样不存在的路径。要修就重装 Toolbox，或直接删掉那个键。
+# 同理，mpv 的 io.mpv.<类型> 一族建议重跑它自己的安装器（<新位置>\installer\mpv-install.bat），
+# 本脚本只兜底处理它漏下的部分。
 $needles = @($pathMap.Keys)
 $discovered = @{}
 foreach ($root in $discoveryRoots) {
@@ -347,7 +368,7 @@ foreach ($key in $discovered.Keys) {
 }
 Write-Output ("discovery: {0} additional key(s) located by reg.exe search" -f $discovered.Count)
 
-# the same key can arrive from several places (explicit list, Toolbox/io.mpv loops, discovery):
+# the same key can arrive from several places (explicit list + discovery):
 # walk each key once
 $seenRoot = @{}
 $uniqueTargets = @()
@@ -454,25 +475,32 @@ foreach ($root in $roots) {
     }
 }
 
-# 2. create shortcuts that are missing entirely (these apps are invisible to Start search)
-$missing = @(
-    @{ Name = 'Xmind';   Target = 'D:\Apps\Installed\Xmind\Xmind.exe' }
-    @{ Name = '夸克网盘'; Target = 'D:\Apps\Installed\quark-cloud-drive\QuarkCloudDrive.exe' }
-)
+# 2. 整条缺失的快捷方式（这类程序对"开始"搜索完全不可见）。
+#    清单来自本机配置（机器专属值不进脚本，硬性约定 8）：local\...local.psd1 的 MissingShortcuts。
+#    未配置时明确说"未配置 / 未做检查"，**不**打印一片空行假装检查过（同 VerifyPaths 的写法）。
+$missing = @()
+if ($script:Cfg -and $script:Cfg.MissingShortcuts) { $missing = @($script:Cfg.MissingShortcuts) }
 $userPrograms = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
-foreach ($m in $missing) {
-    $lnk = Join-Path $userPrograms ("{0}.lnk" -f $m.Name)
-    if (Test-Exists $lnk) { continue }
-    if (-not (Test-Exists $m.Target)) { continue }
-    Set-ShortcutTarget -Lnk $lnk -Target $m.Target
+if ($missing.Count -eq 0) {
+    Write-Output '  （本机"整条缺失的快捷方式"清单：未配置 —— 未做检查，不等于没有缺失）'
+} else {
+    foreach ($m in $missing) {
+        if (-not $m -or -not $m.Name -or -not $m.Target) { continue }
+        $lnk = Join-Path $userPrograms ("{0}.lnk" -f [string]$m.Name)
+        if (Test-Exists $lnk) { continue }
+        if (-not (Test-Exists ([string]$m.Target))) { continue }
+        Set-ShortcutTarget -Lnk $lnk -Target ([string]$m.Target)
+    }
 }
 
 # ---------------------------------------------------------------- verification
 Write-Output ''
 Write-Output '--- verification ---'
 # ① 映射表本次到底被用到没有 —— 明说，免得"什么都没打印"被当成"全都对"。
+#    能走到这里 $pathMap 一定非空（0 条在上面已致命退出），所以"匹配到 0 条"是真的"无需改指"；
+#    把两部分的条数也报出来，本机配置漏填/填错时一眼能看出来。
 $usedOld = @($script:pendingEdits | ForEach-Object { $_.Old } | Where-Object { $_ } | Sort-Object -Unique)
-Write-Output ("映射表 {0} 条，本次匹配到 {1} 条{2}" -f $pathMap.Count, $usedOld.Count, $(if ($usedOld.Count -eq 0) { '（本机已无需改指的登记）' } else { '' }))
+Write-Output ("映射表 {0} 条（本机配置 {1} + 内置 {2}），本次匹配到 {3} 条{4}" -f $pathMap.Count, @($localPathMap).Count, @($pathMapBase).Count, $usedOld.Count, $(if ($usedOld.Count -eq 0) { '（本机已无需改指的登记）' } else { '' }))
 # ② 本机验收清单（可选）。原来这里**写死**了 10 条本机绝对路径：换台机器就是 10 条假 ABSENT，
 #    而且会随程序搬家而腐烂 —— 本机有一条停在迁移前的 BCompare 路径，每次跑都打一条假警报。
 #    硬性约定 8：机器专属值不进脚本。没配置时明确说"未配置"，**不**打印一片 OK 假装检查过。

@@ -23,7 +23,8 @@
 #      -SkipClsidScan           跳过 CLSID 全量扫描
 #      -SkipAssocScan           跳过"文件关联核对"（逐扩展名核对，默认开启；嫌慢可用它）
 #      -SizeScan                额外统计 %LOCALAPPDATA%/%APPDATA% 各子目录体积（较慢，默认关）
-#      -ScanConfigFiles         额外扫描 D:\Apps 下文本配置里的旧路径（需 -SkipOldPathScan 未开）
+#      -ScanConfigFiles         额外扫描"程序所在根目录"下文本配置里的旧路径（需 -SkipOldPathScan 未开）
+#      -AppsRoot <目录>         配合 -ScanConfigFiles：要扫描的程序根目录（不指定则本节报"未执行有效检查"）
 #      -WarnFreePercent 15      C 盘可用低于该百分比时告警（默认 15）
 #      -NoHistory               本次不写入 snapshot.json（不参与增长对比）
 #
@@ -41,6 +42,7 @@ param(
     [switch]$SkipAssocScan,
     [switch]$SizeScan,
     [switch]$ScanConfigFiles,
+    [string]$AppsRoot,
     [int]$WarnFreePercent = 15,
     [switch]$NoHistory
 )
@@ -861,6 +863,42 @@ function Find-OldPathHits {
     return $hits
 }
 
+# 在"程序所在根目录"下扫文本配置里是否还写死着清单里的旧路径。
+# 单独成函数是为了让测试够得着（AST 抽取只能抽函数），而且**纯函数**：只返回数据，
+# 不打印、不记 findings —— 打印与记账留给调用方，于是"扫了 0 个文件"这种状态没法被
+# 悄悄写成"未发现"（这一节历史上出现过两次这种假绿）。
+# 返回：Status = ok / no-root / no-files，外加 Root、Files、Hits(File/Needle)。
+function Get-ConfigFileOldPathHits {
+    param([string]$Root, [string[]]$Needles, [int]$MaxFiles = 3000)
+    if (-not $Root -or -not (Test-Path -LiteralPath $Root)) {
+        return [pscustomobject]@{ Status = 'no-root'; Root = $Root; Files = 0; Hits = @() }
+    }
+    # 扩展名过滤用 `-Path`（目录本身，尾部不带 *），**不能用 `-LiteralPath`**：
+    # 实测对比 PS 7.6.6 与 5.1.26100（同一份命令、同一个小目录）：
+    #   * `-LiteralPath <目录> -Recurse -File -Include *.ini` → **5.1 上 -Include 被静默忽略**，
+    #     根目录下所有文件都被扫（两个引擎拿到的文件清单都不一样）；
+    #   * `-Path <目录>\* ...` → 5.1 上会拿过滤条件去剪子目录（子目录名不匹配就不递归 → 漏文件）；
+    #   * `-Path <目录> ...` → 两个引擎一致，且能递归进子目录。
+    # 目录名里可能有 `[` `]` 这类通配符字符，所以先按字面量转义。
+    # 执行者：tests\health-check.configscan.tests.ps1（断言 .md 不进文件数、子目录里的 .json 要进）。
+    $pattern = [System.Management.Automation.WildcardPattern]::Escape($Root)
+    $cand = @(Get-ChildItem -Path $pattern -Recurse -File -ErrorAction SilentlyContinue -Include *.conf,*.ini,*.json,*.properties,*.cfg,*.yaml,*.yml,*.txt,*.bat,*.cmd,*.ps1 |
+            Where-Object { $_.Length -lt 1MB -and $_.FullName -notmatch '\\node_modules\\|\\.git\\|\\cache\\|\\Cache\\' } |
+            Select-Object -First $MaxFiles)
+    if ($cand.Count -eq 0) {
+        return [pscustomobject]@{ Status = 'no-files'; Root = $Root; Files = 0; Hits = @() }
+    }
+    $hits = @()
+    foreach ($f in $cand) {
+        foreach ($n in @($Needles)) {
+            if (Select-String -LiteralPath $f.FullName -SimpleMatch -Pattern $n -Quiet -ErrorAction SilentlyContinue) {
+                $hits += [pscustomobject]@{ File = $f.FullName; Needle = $n }
+            }
+        }
+    }
+    return [pscustomobject]@{ Status = 'ok'; Root = $Root; Files = $cand.Count; Hits = $hits }
+}
+
 Section '12. 旧路径残留扫描'
 # ============================================================================
 if ($SkipOldPathScan) {
@@ -878,7 +916,7 @@ if ($SkipOldPathScan) {
             '# C:\Users\<旧用户名>',
             '#',
             '# 例：迁移前程序所在的旧目录',
-            '# D:\OldAppFolder',
+            '# D:\OldAppFolder',   # lint-ok: 给用户看的模板示例（整行是注释，不会被当成关键词）
             '# D:\Apps\Portable\<搬走前的旧名字>'
         )
         $defaultNeedles | Set-Content -LiteralPath $needles -Encoding $script:Enc
@@ -961,26 +999,34 @@ W ("清单 {0} 条 × 根键 {1} 个，只遍历一遍：只读字符串类型�
         }
         # 文本配置扫描只在"清单可用"时有意义：清单为空时它会遍历 0 个关键词并打印
         # "- ✓ 未发现" —— 那是第二个假绿，所以放进这个分支里。
+        # 扫描根原来**写死**成 D:\Apps：换台机器就什么都不扫，连"未发现"都不打印（只留一个空标题），
+        # 那正是最容易被读成"没问题"的形状。现在根由 -AppsRoot 给出，且缺根 / 根不存在 /
+        # 根下没有可扫文件 三种情况都明确报"未执行有效检查"。
         if ($ScanConfigFiles) {
             W ''
-            W '**文本配置里的旧路径**（扫描 D:\Apps 下的 conf/ini/json/properties/txt 等）'
-            W ''
-            $cfgRoot = 'D:\Apps'
-            if (Test-Path -LiteralPath $cfgRoot) {
-                $cand = Get-ChildItem -LiteralPath $cfgRoot -Recurse -File -ErrorAction SilentlyContinue -Include *.conf,*.ini,*.json,*.properties,*.cfg,*.yaml,*.yml,*.txt,*.bat,*.cmd,*.ps1 |
-                        Where-Object { $_.Length -lt 1MB -and $_.FullName -notmatch '\\node_modules\\|\\\.git\\|\\cache\\|\\Cache\\' } |
-                        Select-Object -First 3000
-                $cfgHits = 0
-                foreach ($f in $cand) {
-                    foreach ($n in $list) {
-                        if (Select-String -LiteralPath $f.FullName -SimpleMatch -Pattern $n -Quiet -ErrorAction SilentlyContinue) {
-                            W ("- {0}  ← 含旧路径 {1}" -f $f.FullName, $n)
-                            AddFinding '提示' '配置文件旧路径' $f.FullName $n '配置文件里写死了旧路径' '按需改成新路径（迁移后常被忽略）'
-                            $cfgHits++
-                        }
+            if (-not $AppsRoot) {
+                W '**文本配置里的旧路径**：未指定 `-AppsRoot` —— **本节未执行有效检查**。'
+                AddFinding '警告' '体检范围' '-ScanConfigFiles' '未指定扫描根 -AppsRoot' '未执行检查' '用法：-ScanConfigFiles -AppsRoot <程序所在根目录>'
+            } else {
+                # 扫描逻辑在 Get-ConfigFileOldPathHits 里（纯函数，tests\health-check.configscan.tests.ps1 真跑它）。
+                # 这里只负责把三种状态分别**说清楚**：ok=真的扫了 N 个文件 / no-root / no-files。
+                $cfgScan = Get-ConfigFileOldPathHits -Root $AppsRoot -Needles $list
+                W ("**文本配置里的旧路径**（扫描 {0} 下的 conf/ini/json/properties/txt 等）" -f $cfgScan.Root)
+                W ''
+                if ($cfgScan.Status -eq 'no-root') {
+                    W ("- ⚠ 扫描根不存在：{0} —— **本节未执行有效检查**。" -f $cfgScan.Root)
+                    AddFinding '警告' '体检范围' $cfgScan.Root '扫描根不存在' '未执行检查' '换成真实存在的程序根目录，或去掉 -ScanConfigFiles'
+                } elseif ($cfgScan.Status -eq 'no-files') {
+                    W ("- ⚠ {0} 下没有可扫描的配置文件（0 个）—— **本节未执行有效检查**。" -f $cfgScan.Root)
+                    AddFinding '警告' '体检范围' $cfgScan.Root '没有可扫描的配置文件' '未执行检查' '确认 -AppsRoot 是否指对了目录'
+                } else {
+                    foreach ($h in $cfgScan.Hits) {
+                        W ("- {0}  ← 含旧路径 {1}" -f $h.File, $h.Needle)
+                        AddFinding '提示' '配置文件旧路径' $h.File $h.Needle '配置文件里写死了旧路径' '按需改成新路径（迁移后常被忽略）'
                     }
+                    # 结论里带上"实际扫了几个文件"：只看"未发现"分不清"扫了 3000 个"和"扫了 0 个"。
+                    if (@($cfgScan.Hits).Count -eq 0) { W ("- ✓ 已扫描 {0} 个配置文件，未发现清单里的旧路径" -f $cfgScan.Files) }
                 }
-                if ($cfgHits -eq 0) { W '- ✓ 未发现' }
             }
         }
     }
