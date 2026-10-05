@@ -88,7 +88,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 | 失效文件关联 / 卸载记录 / App Paths / 协议 / 服务 / 命名空间图标 | 213 / 22 / 15 / 14 / 10 / 1 | 0（Adobe 半残留 3 项刻意保留） | ⚠️ 见[案例报告](docs/case-report-d-apps-migration.md)的过程记录 |
 | 修复规模 | —— | 约 **400 个注册表键** + 约 **290 处引用** + 11 处路径改指 | ⚠️ 同上 |
 | 回滚备份 | —— | **545 个 `.reg`**，每条改动前导出 | 🔒 作者本机 `local/rollback/`（不在仓库里） |
-| 双引擎一致性 | —— | 5.1 与 7.6 下 `findings.csv` **逐行 0 差异**（本机 2.28 万行、CI 13.1 万行；"系统自己会写的"缓存位置如 `MrtCache`/`MuiCache` 已排除，排除条数会打印出来） | [tests/health-check.dualengine.tests.ps1](tests/health-check.dualengine.tests.ps1)（`SLOW_TESTS=1`，CI 上跑；这一项约 3 分钟） |
+| 双引擎一致性 | —— | 5.1 与 7.6 下 `findings.csv` **逐行 0 差异**（受控输入：清单是套件自己造的临时 ProgID，因此结果**确定**；全类别逐行比对，两次快照之间系统被改动时会自动重跑一次再判） | [tests/health-check.dualengine.tests.ps1](tests/health-check.dualengine.tests.ps1)（`SLOW_TESTS=1`，CI 上跑；这一项约 3 分钟） |
 
 > **诚实说明**：上表 🔒 的数据是作者本机（一台真实笔记本）的注册表数据，**可复现产物一律不在仓库里** ——
 > 你可以在自己机器上重跑脚本得到**属于你自己机器**的同类数字，那才是这些脚本的用途；⚠️ 的行请当**叙述**读，

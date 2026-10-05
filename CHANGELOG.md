@@ -34,15 +34,19 @@ v2.2 把迁移映射表搬进 `local\` 之后，新机器上第一件事是"把�
 ### 修复：CI 的"双引擎零差异"断言会**假红**（不是工具不一致）
 
 `tests\health-check.dualengine.tests.ps1` 会**先后**跑两次体检（相隔数分钟）再逐行比对 `findings.csv`。
-但它用的清单 `C:\Program Files` 会命中 `HKCU\…\Local Settings\MrtCache\…` 这类
-**Windows 自己在跑动时会写**的资源缓存 —— 只要两次之间系统多写一条，断言就必然假红。
-CI 上实测到过：差 1 行（131,397 vs 131,398），失败信息指向 WindowsTerminal 的一条缓存。
+两个引擎读的是同一台**会变的**机器，Windows 在这几分钟里可能自己改注册表，断言于是假红。实测踩过两次：
 
-这是**测试的缺陷**，不是工具在 5.1 与 7.x 下结论不一致。现在按"易变**位置**"排除
-（`MrtCache` / `MuiCache` / `BagMRU` / `Bags` / `ComDlg32` / `AppCompatFlags` / `UserAssist` /
-`Search` 等 10 类），并强制两条：**排除条数必须打印**（类别与位置分开报）、
-**过滤后每个引擎都必须还剩行且不少于原始行数的一半** —— 否则"过滤"本身会成为新的假绿来源。
-真正的旧路径残留（含 `Start\TileProperties` 这类跨层路径）一律照常参与对比。
+- 清单 `C:\Program Files` 命中的 `HKCU\…\Local Settings\MrtCache\…WindowsTerminal…` 多了一条（差 1 行）；
+- `HKLM\…\Appx\AppAllUserStore\…SecHealthUI…` 的**包版本号**在两次之间从 `1000.26100` 变成 `1000.29628`、
+  `AppModel\StateRepository\Cache\Package\Data` 的子键号从 `35` 变成 `40`（差 8 行）。
+
+这是**测试的缺陷**，不是工具在 5.1 与 7.x 下结论不一致。中途试过"排除易变位置"（10 类缓存键），
+但第二次假红就换了地方 —— 那是打地鼠。**最终做法是把清单变成受控输入**：在
+`HKCU\Software\Classes\_wmh_selftest_…` 下造一个带唯一 GUID 的临时 ProgID 当清单（扫描结果因此确定），
+并断言"清单扫描只命中这个 fixture"；全类别逐行比较，出现差异时**只重跑有差异的那一侧一次**再判
+（真差异是确定性的、系统改动是偶发的），并把这件事打印出来。两次都必须是**非空**结果，否则
+"0 行对 0 行"也是假绿。（安全底线沿用 `writepath.tests.ps1`：只在 `_wmh_selftest` 前缀下、全在 HKCU、
+结束时删除并检查删干净了。）
 
 ### 维护：CI 不再有 Node 20 弃用告警
 

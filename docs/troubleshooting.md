@@ -71,15 +71,21 @@ MSIX 版 pwsh 在**父进程不是 PowerShell 7** 时不会把 stdout 交给父�
 
 ## 4. 双引擎测试报"仅某一侧多一行" —— 先看是不是系统的缓存
 
-`tests\health-check.dualengine.tests.ps1` 会**先后**跑两次体检（相隔数分钟）再逐行比对。如果差异只有
-一两行，而且位置落在 `HKCU\…\Local Settings\MrtCache`（或 `MuiCache` / `BagMRU` / `ComDlg32` /
-`AppCompatFlags` / `UserAssist` / `Search`）这类**Windows 自己在跑动时会写**的缓存键里，那不是工具
-在 5.1 与 7.x 下结论不一致 —— 是两次快照之间系统多写了一条。
+`tests\health-check.dualengine.tests.ps1` 会**先后**跑两次体检（相隔数分钟）再逐行比对。两个引擎各自
+读的是同一台**会变的**机器：Windows 在几分钟里就可能自己改注册表，于是"零差异"出现假红。实测踩过两次：
 
-- 套件**已经把这类位置排除**（10 类，排除条数会打印出来），所以正常情况下不会再看到这种假红；
-- 手工比对（`Compare-Object` 两份 `findings.csv`）时**记得自己排除**同样这批位置；
-- 判据上还有两条线：排除后每个引擎都必须**还剩行**、且**不少于原始行数的一半** —— 一旦"排除"把报告
-  吃光，断言会明确失败，而不是"两边都空 → 零差异 → 打勾"。
+- `HKCU\…\Local Settings\MrtCache\…WindowsTerminal…` 多了一条（差 1 行）；
+- `HKLM\…\Appx\AppAllUserStore\…SecHealthUI…` 的包版本号从 `1000.26100` 变成 `1000.29628`、
+  `AppModel\StateRepository\Cache\Package\Data` 的子键号从 `35` 变成 `40`（差 8 行）。
+
+**套件现在不靠"排除这些位置"**（那是打地鼠 —— 第二次假红就换了地方），而是把清单变成**受控输入**：
+在 `HKCU\Software\Classes\_wmh_selftest_…` 下造一个带唯一 GUID 的临时 ProgID 当清单，扫描结果因此是
+**确定的**（出现"命中 fixture 之外的键"本身就是真信号）；全类别逐行比较，若出现差异则**只重跑有差异的
+那一侧一次**再判（真差异是确定性的、系统改动是偶发的），并把这件事打印出来。
+
+**手工比对**（`Compare-Object` 两份 `findings.csv`）时没有这层保护，所以要自己排除上面那批位置
+（含 `MrtCache` / `MuiCache` / `BagMRU` / `Bags` / `ComDlg32` / `AppCompatFlags` / `UserAssist` /
+`Search` / `AppModel\StateRepository\Cache` / `Appx\AppAllUserStore`）。
 
 > 真因排查的口径也记在这里：**别猜，先量**。同一件事（CI 上 `powershell` 那个 job 要 21 分钟）
 > 先后否掉了三个看起来合理的假设 —— `Compare-Object` 慢（实测 0.4 秒）、5.1 宿主启动子进程慢

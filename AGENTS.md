@@ -125,11 +125,11 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
 
 改过体检逻辑后还要跑**真实体检对比**：同一份脚本在 5.1 与 7.x 下各跑一遍，要求**结论逐条相同**（用 `Compare-Object` 比对两份 `findings.csv`）。
 
-> ⚠ **比之前先排除"系统自己会写的"缓存位置**：`Local Settings\MrtCache`、`MrtCache`、`MuiCache`、`Shell\BagMRU`/`Bags`、`ShellNoRoam`、`Explorer\ComDlg32`、`AppCompatFlags`、`Explorer\UserAssist`、`CurrentVersion\Search`。两次运行隔了几分钟，Windows 就可能在这些键里多写/改写一条，于是**必然**出现"仅某一侧多一行"的假红 —— 实测踩过（CI 上差 1 行，追了半天）。真正的旧路径残留照常比。
+> ⚠ **手工比对时先排除"系统自己会写的"位置**：`Local Settings\MrtCache`、`MrtCache`、`MuiCache`、`Shell\BagMRU`/`Bags`、`ShellNoRoam`、`Explorer\ComDlg32`、`AppCompatFlags`、`Explorer\UserAssist`、`CurrentVersion\Search`，还有 `AppModel\StateRepository\Cache` 与 `Appx\AppAllUserStore`（包/版本号会被后台更新改掉）。两次运行隔了几分钟，Windows 就可能在这些地方多写或改写一条，于是**必然**出现"仅某一侧多一行"的假红 —— 实测踩过两次（CI 上差 1 行与差 8 行）。
 
-- 这一步现在**有自动化执行者**：`tests\health-check.dualengine.tests.ps1`（`SLOW_TESTS=1` 启用，CI 上会跑）——它在临时目录里用固定清单、`-NoHistory`、全新 `OutDir` 分别用两个引擎各跑一次体检，然后逐行比对 `findings.csv`（显式排除"容量/目录体积"这类每次都会变的**类别**与上面那批易变**位置**，并把排除条数打印出来；两次都必须是**非空**结果、且过滤后不少于原始行数的一半，否则"0 行对 0 行"或"过滤过宽"都是假绿）。本机实测 2.28 万行 / 0 差异，约 3 分钟。  `[test] tests\health-check.dualengine.tests.ps1`
+- 这一步现在**有自动化执行者**：`tests\health-check.dualengine.tests.ps1`（`SLOW_TESTS=1` 启用，CI 上会跑）——它在临时目录里分别用两个引擎各跑一次体检，然后逐行比对 `findings.csv`。它**不靠"排除易变位置"**（那是打地鼠，第二次假红就换了地方），而是把清单变成**受控输入**：在 `HKCU\Software\Classes\_wmh_selftest_…` 下造一个带唯一 GUID 的临时 ProgID 当清单（扫描结果因此确定），并断言"清单扫描只命中这个 fixture"；全类别逐行比较，若出现差异则**只重跑有差异的那一侧一次**再判（真差异是确定性的、系统改动是偶发的），并把这件事打印出来。两次都必须是**非空**结果，否则"0 行对 0 行"也是假绿。约 3 分钟。  `[test] tests\health-check.dualengine.tests.ps1`
 - **性能上别退回慢写法**（CI 上曾因此白烧 20 分钟）：过滤 + 拼行签名要**一趟遍历 + `List[string].Add` + 字符串 `+` 连接**；`'{0}|…' -f …` 配 `$o += …` 在 13.1 万行下实测 pwsh 42.7 秒、**5.1 676 秒**（`[Array]::Sort(…, Ordinal)` 排序、HashSet 求差异）。  `[test] tests\health-check.dualengine.tests.ps1`
-- 但它**不能完全替代手工那一步**：为了压时间它关掉了 `-SkipAssocScan -SkipClsidScan` 两项扫描，且用的是固定清单而不是本机真实旧路径清单。**改过 CLSID / 文件关联那两段逻辑时，仍要按上面的手工方式跑一次完整体检再比对。**  `[manual]` 完整扫描 + 本机真实清单这两件事没有便宜的机械判据
+- 但它**不能完全替代手工那一步**：为了压时间它关掉了 `-SkipAssocScan -SkipClsidScan` 两项扫描，且清单是自造的 fixture 而不是本机真实旧路径清单。**改过 CLSID / 文件关联那两段逻辑时，仍要按上面的手工方式跑一次完整体检再比对。**  `[manual]` 完整扫描 + 本机真实清单这两件事没有便宜的机械判据
 
 ### 约定必须有执行者
 
