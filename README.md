@@ -91,9 +91,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 
 体检常用开关：`-SkipOldPathScan`（跳过最慢的全注册表旧路径扫描）、`-SkipAssocScan`、`-SkipClsidScan`、`-SizeScan`（统计 `%LOCALAPPDATA%`/`%APPDATA%` 体积；**没有 WizTree 时的兜底**，有 WizTree 就直接用它）、`-WarnFreePercent 15`、`-ScanConfigFiles -AppsRoot <目录>`（顺带扫该目录下文本配置里的旧路径；**不指定 `-AppsRoot` 时本节会明确报"未执行有效检查"**，而不是静默什么都不扫）。
 
-> **填映射表这一步现在还是手工的**：`repair-migrated-apps` 需要你按本机情况写 `local/repair-migrated-apps.local.psd1`
-> （旧路径从哪来？见 `migration-checklist.md` 的迁移前清单，或直接用 Everything 找"程序搬到哪了"）。
-> 自动产出改指候选（`-DiscoverTargets`）**尚未实现**，列在后续计划里。
+> **映射表怎么填**：可以手工写 `local/repair-migrated-apps.local.psd1`（旧路径从哪来？见 `migration-checklist.md`
+> 的迁移前清单），也可以让脚本先给一版候选草稿：
+>
+> ```powershell
+> .\scripts\repair-migrated-apps.cmd -DiscoverTargets
+> ```
+>
+> 它**只读**地扫注册表里"指向已不存在路径"的登记 → 归约出旧目录前缀 → 在一趟盘遍历里找同名目录 →
+> 产出一份 `local\repair-migrated-apps.discovered.psd1` 草稿。草稿里**只有高置信条目**（新位置存在名字与
+> 应用名相符的 `.exe`），其余同名目录只列在"提示"区由你判断 —— 核对后把确认的行复制进真正的配置即可。
+> 它不写注册表、不需要管理员，也不会自动被脚本读取。
 
 ## 体检覆盖的 12 类"程序位置登记"
 

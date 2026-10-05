@@ -89,6 +89,7 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
 .\scripts\health-fix.cmd            # 清理试运行
 .\scripts\health-fix.cmd -Apply     # 真正清理（需要管理员权限，脚本会自行检查）
 .\scripts\repair-migrated-apps.cmd  # 迁移路径修复（映射表在 local\repair-migrated-apps.local.psd1）
+.\scripts\repair-migrated-apps.cmd -DiscoverTargets   # 只读：产出改指候选草稿（映射表还空着时起步用）
 ```
 
 ### 本地服务优先（探索用），脚本保持零依赖（红线）
