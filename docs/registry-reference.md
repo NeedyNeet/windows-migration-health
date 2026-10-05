@@ -99,7 +99,7 @@ reg query "HKLM\Software\Microsoft\Windows\CurrentVersion" /f "D:\mpv-lazy" /s
 |---|---|
 | `scripts/health-check.ps1`（只读体检） | 逐类核对上表 **1–12 类**的目标是否存在 → 输出 `report.md`（人读）+ `findings.csv`（逐条明细）；另外检查孤儿安装缓存、旧路径残留、磁盘容量与增长。**没查到的会明说**：清单为空/全是占位符、或用了 `-Skip*` 开关时，报告写"本节未执行检查"并记入 `findings.csv`，不会给绿勾 |
 | `scripts/health-fix.ps1`（按规则清理） | A 段改路径（程序搬走）→ B 段删已卸载软件的记录/服务/协议 → C 段清"指向已删 ProgID"的引用与图标覆盖 → D 段清悬空引用。判据统一是 `Test-Missing`（目标确实不存在才动手）；每条改动前 `reg export` 到 `local/rollback/<运行时间戳>/`，**备份失败则该条改动被跳过** |
-| `scripts/repair-migrated-apps.ps1`（迁移批量改写） | 按 `local\repair-migrated-apps.local.psd1` 的"旧→新"映射改写上表 1/2/4/8/9/12 类，并用 **.NET 一次性遍历**（`Find-MigratedKeys`，与 `health-check` 第 12 节同一套做法）发现更多引用点；写入前检查目标文件是否真的存在（`Test-Exists`） |
+| `scripts/repair-migrated-apps.ps1`（迁移批量改写） | 按 `local\repair-migrated-apps.local.psd1` 的"旧→新"映射改写上表 1/2/4/8/9/12 类，并用 **.NET 一次性遍历**（`Find-MigratedKeys`，与 `health-check` 第 12 节同一套做法）发现更多引用点；写入前检查目标文件是否真的存在（`Test-Exists`）。另有一个只读的 `-DiscoverTargets`：从"指向已消失路径的登记"与"磁盘上的同名目录"反推出**候选映射草稿**，专门给还空着的映射表起步用 |
 
 > **第 6 类的代码位置**：`scripts\health-check.ps1` 第 7 节，枚举由 `Get-ClsidExtensionKeys` 完成 —— 它扫的是 `Classes\CLSID` **子树**。注意 `Classes` 这一层里"以 `{` 命名"的键**不是**第 6 类的登记位置（正常机器上几乎不存在这种键）；只看这一层会把"检查了 0 项"打成绿勾（见 `AGENTS.md` 硬性约定 16）。
 >

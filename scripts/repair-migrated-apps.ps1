@@ -22,7 +22,16 @@
 [CmdletBinding()]
 param(
     [switch]$Apply,
-    [string]$BackupDir
+    [string]$BackupDir,
+    # -DiscoverTargets：只读地"找旧路径 + 找新位置"，产出一份改指候选草稿（供人核对后填进 local 配置）。
+    # 本模式不写注册表、不需要管理员，也不受"映射表为空 → exit 3"那条守卫影响（它正是为空白映射表准备的）。
+    [switch]$DiscoverTargets,
+    # 找新位置时扫哪些盘/目录（默认：所有就绪的固定盘）
+    [string[]]$ScanRoots,
+    # 找新位置时最多往下几层（默认 4：迁移后的程序通常在 D:\Apps\... 这种浅路径下）
+    [int]$MaxDepth = 4,
+    # 草稿写到哪（默认：仓库根\local\repair-migrated-apps.discovered.psd1，该目录已 gitignore）
+    [string]$OutFile
 )
 
 $ErrorActionPreference = 'Continue'
@@ -141,9 +150,269 @@ $localPathMap = @()
 if ($script:Cfg -and $script:Cfg.PathMap) { $localPathMap = @($script:Cfg.PathMap) }
 $pathMap = Merge-PathMap -Local $localPathMap -Base $pathMapBase
 
+# ============================================================ -DiscoverTargets
+# 映射表是本机特有的：新机器上第一件事就是把它填出来，否则脚本会直接报"未执行有效检查"。
+# 这一步把"人肉考古旧路径"变成"机器给候选"：**只读**地扫注册表里那些"指向已不存在路径"的字符串值，
+# 归约出旧目录前缀，再到磁盘上找同名目录，最后产出一份**草稿**（不碰真配置、不改注册表、不需要管理员）。
+# 判据刻意保守：草稿里"新位置有同名 .exe"的才默认启用，其余全部注释掉并写明理由，由人决定。
+
+# 从"带参数的命令行 / 图标索引"里取出路径本身。
+# 例：'"C:\a\b.exe" /uninstall' -> C:\a\b.exe ；'C:\a\b.exe,0' -> C:\a\b.exe ；'C:\a\b' -> C:\a\b
+function Get-PathToken([string]$Text) {
+    if (-not $Text) { return $null }
+    $t = $Text.Trim()
+    if ($t.StartsWith('"')) { $q = $t -split '"'; if ($q.Count -ge 3) { return $q[1] } }
+    # 非贪婪地取到第一个"像程序/图标的扩展名"为止：这样 'C:\Program Files\a.exe -flag' 只取到 .exe
+    $m = [regex]::Match($t, '^([A-Za-z]:\\[^"]*?\.(?:exe|dll|com|bat|cmd|msc|cpl|sys|ps1|ico|lnk|url|jar|py))')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ($t -split ',')[0].Trim()
+}
+
+# 把"指向某个已不存在目标的路径"归约成"最长的、已不存在的目录前缀" —— 这正是映射表要的 Old。
+# 例：...\quark-cloud-drive\QuarkCloudDrive.exe（不存在），而 ...\quark-cloud-drive 也不存在、
+#     C:\Program Files (x86) 存在 → 返回 ...\quark-cloud-drive
+function Get-OldPathPrefix([string]$Path) {
+    $p = Get-PathToken $Path
+    if (-not $p) { return $null }
+    $p = $p.TrimEnd('\', ' ')
+    if ($p -notmatch '^(?:[A-Za-z]:\\|\\\\)') { return $null }         # 只认盘符 / UNC 绝对路径
+    if ($p -match '%[^%]+%' -or $p -match '<[^>]+>') { return $null }  # 未展开的环境变量 / 占位符
+    # 系统托管的位置不当候选：它们的"不存在"是正常的（Store 应用 / 驱动仓库 / MSI 安装缓存）
+    if ($p -match '\\Windows\\' -or $p -match '\\WindowsApps\\' -or $p -match '\\DriverStore\\' -or $p -match '\\Package Cache\\') { return $null }
+    if (Test-Exists $p) { return $null }                               # 目标还在 → 不是"消失的路径"
+    for ($i = 0; $i -lt 8; $i++) {
+        $parent = Split-Path -Parent $p
+        if (-not $parent) { return $null }                             # 退到盘根还没有存在的祖先 → 放弃
+        if (Test-Exists $parent) { return $p }
+        $p = $parent
+    }
+    return $null
+}
+
+# 扫注册表，收集"指向已不存在路径"的旧前缀及其引用次数。
+# 只读字符串类型（String / ExpandString / MultiString）—— 路径只可能出现在字符串里。
+function Get-DeadPathPrefixes([string[]]$HiveRoots) {
+    $refs = [ordered]@{}
+    foreach ($psRoot in $HiveRoots) {
+        $hive = [Microsoft.Win32.RegistryHive]::CurrentUser
+        if ($psRoot -like 'HKLM:\*') { $hive = [Microsoft.Win32.RegistryHive]::LocalMachine }
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, [Microsoft.Win32.RegistryView]::Registry64)
+        $k0 = $null
+        try { $k0 = $base.OpenSubKey($psRoot.Substring(6)) } catch { $k0 = $null }
+        # 打不开就跳过：这里的任务是"给候选"，不是"做体检"（覆盖率由 health-check 负责，它会明说没查到的）
+        if (-not $k0) { continue }
+        $stack = New-Object System.Collections.Stack
+        $stack.Push($k0)
+        while ($stack.Count -gt 0) {
+            $k = $stack.Pop()
+            foreach ($vn in $k.GetValueNames()) {
+                $kind = $k.GetValueKind($vn)
+                if ($kind -ne [Microsoft.Win32.RegistryValueKind]::String -and
+                    $kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString -and
+                    $kind -ne [Microsoft.Win32.RegistryValueKind]::MultiString) { continue }
+                $raw = $k.GetValue($vn, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                $text = if ($raw -is [array]) { ($raw -join "`n") } else { [string]$raw }
+                if (-not $text -or $text -notmatch '(?:[A-Za-z]:\\|\\\\)') { continue }
+                foreach ($chunk in ($text -split "[`r`n;]")) {
+                    if (-not $chunk.Trim()) { continue }
+                    $pfx = Get-OldPathPrefix $chunk
+                    if (-not $pfx) { continue }
+                    if ($refs.Contains($pfx)) { $refs[$pfx] = [int]$refs[$pfx] + 1 } else { $refs[$pfx] = 1 }
+                }
+            }
+            foreach ($sn in $k.GetSubKeyNames()) {
+                $c = $null
+                try { $c = $k.OpenSubKey($sn) } catch { $c = $null }   # 读不到就跳过（同上：只求给候选）
+                if ($c) { $stack.Push($c) }
+            }
+            $k.Close()
+        }
+    }
+    return $refs
+}
+
+# 通用目录名：它们**不是**应用名，拿来匹配只会撞出一堆垃圾候选
+# （实测第一版草稿里 `x86` 撞上 `DownKyi\x86`、`java` 撞上 IDEA 的 `plugins\java`、`app` 撞上 `Doubao\app`）。
+$script:GenericSegments = @(
+    'x86','x64','x32','amd64','arm64','bin','bins','app','apps','application','applications',
+    'lib','libs','library','java','jre','jdk','plugins','plugin','extensions','extension',
+    'resources','resource','res','data','database','db','docs','doc','documentation',
+    'examples','samples','include','includes','share','shared','src','source','test','tests',
+    'tools','tool','update','updater','updates','cache','caches','temp','tmp','logs','log',
+    'config','configs','settings','setup','install','installer','uninstall','files','file',
+    'system','system32','syswow64','windows','program','programs','programdata','users',
+    'common','commonfiles','current','latest','version','v1','v2','v3','dist','build',
+    'output','out','content','contents','assets','static','public','private','media',
+    'images','img','icons','fonts','locale','locales','lang','languages','help','html','css','js'
+)
+
+# 这一段能不能当"应用名"用：够长、含字母、且不在通用名清单里。
+function Test-AppSegment([string]$Segment) {
+    if (-not $Segment) { return $false }
+    if ($Segment.Length -lt 3) { return $false }
+    if ($Segment -notmatch '[A-Za-z]') { return $false }
+    if ($script:GenericSegments -contains $Segment.ToLowerInvariant()) { return $false }
+    return $true
+}
+
+# 给一个旧前缀算出"去磁盘上拿什么名字找"：
+#   * 末段就是应用名（如 ...\quark-cloud-drive）      -> 按末段找（leaf）
+#   * 末段是通用名，但上一段是应用名（...\ldplayer9box\x86） -> 按"上一段\末段"两级找（tail），
+#     命中的目录本身就是正确的新位置（保留 \x86 这一级），不会把子目录结构改掉
+#   * 两段都通用（如 D:\a\bin）-> 放弃：无法从路径判断是哪个应用
+# 返回 @{ Mode='leaf'|'tail'; Key=...; App=应用名段 } 或 $null。
+function Get-RepointKey([string]$OldPrefix) {
+    $leaf = Split-Path -Leaf $OldPrefix
+    $parentPath = Split-Path -Parent $OldPrefix
+    $parent = if ($parentPath) { Split-Path -Leaf $parentPath } else { '' }
+    if (Test-AppSegment $leaf) { return [pscustomobject]@{ Mode = 'leaf'; Key = $leaf; App = $leaf } }
+    if ((Test-AppSegment $parent) -and $leaf) {
+        return [pscustomobject]@{ Mode = 'tail'; Key = ($parent + '\' + $leaf); App = $parent }
+    }
+    return $null
+}
+
+# 一趟盘遍历就把**所有想要的目录名**配齐 —— 绝不能对每个旧前缀各扫一遍盘
+# （20 个前缀 × 3 个盘 = 60 次全盘遍历）。
+# 两个实现要点，都是实测撞出来的：
+#   · 用 .NET 的 EnumerateDirectories **逐目录**枚举，而不是 `Get-ChildItem -Recurse -ErrorAction Stop`：
+#     后者只要有一个子目录读不到就整棵树报错返回空（实测拿 C:\Windows 当根时"遍历 0 个目录"），
+#     于是候选全丢。逐目录枚举能把失败收敛到那一层，并如实计数（"候选可能不全"要能说出来）。
+#   · 名字用**精确比较**（小写后比）：目录名里带 [ ] 时 -Filter/-Include 会把它们当通配符。
+# 同时建两个索引：末段名（leaf）与"上一段\末段"（tail），供 Get-RepointKey 的两种模式查。
+function Find-WantedDirs([string[]]$Roots, [int]$MaxDepth, [string[]]$LeafNames, [string[]]$TailNames) {
+    $leafMap = @{}
+    foreach ($n in @($LeafNames)) { if ($n) { $leafMap[$n.ToLowerInvariant()] = New-Object System.Collections.Generic.List[string] } }
+    $tailMap = @{}
+    foreach ($n in @($TailNames)) { if ($n) { $tailMap[$n.ToLowerInvariant()] = New-Object System.Collections.Generic.List[string] } }
+    $noise = '\\Windows\\|\\WindowsApps\\|\\DriverStore\\|\\\$Recycle\.Bin\\|\\System Volume Information\\|\\node_modules\\|\\\.git\\|\\Package Cache\\'
+    $denied = 0
+    $scanned = 0
+    $rootsDone = @()
+    foreach ($root in $Roots) {
+        if (-not (Test-Exists $root)) { continue }
+        $rootsDone += $root
+        $queue = New-Object System.Collections.Queue
+        $queue.Enqueue(@{ Path = $root; Depth = 0 })
+        while ($queue.Count -gt 0) {
+            $cur = $queue.Dequeue()
+            $subs = @()
+            try { $subs = @([System.IO.Directory]::EnumerateDirectories($cur.Path)) }
+            catch {
+                $denied++          # 这一层读不到：记账，但**不**放弃整棵树
+                continue
+            }
+            foreach ($full in $subs) {
+                $scanned++
+                $leaf = [System.IO.Path]::GetFileName($full)
+                $k = $leaf.ToLowerInvariant()
+                if ($leafMap.ContainsKey($k)) { $leafMap[$k].Add($full) }
+                if ($tailMap.Count -gt 0) {
+                    $pk = [System.IO.Path]::GetFileName($cur.Path)
+                    if ($pk) {
+                        $tk = ($pk + '\' + $leaf).ToLowerInvariant()
+                        if ($tailMap.ContainsKey($tk)) { $tailMap[$tk].Add($full) }
+                    }
+                }
+                # 注意给被检查的路径**补一个尾部反斜杠**再匹配：噪声清单里写的是 `\node_modules\`，
+                # 而路径 `...\scan\node_modules` 结尾没有斜杠，不补就会漏判（实测踩过：噪声目录被当候选）。
+                if (($cur.Depth + 1) -ge $MaxDepth) { continue }
+                if (($full + '\') -match $noise) { continue }
+                # **不跟着 reparse point 走**：C:\ProgramData\Application Data 是指回 ProgramData 的
+                # junction，跟进去会生成 `Application Data\Application Data\...` 这种无限嵌套的假路径
+                # （实测第一版真实草稿里就全是这种垃圾）。
+                $attrs = [System.IO.FileAttributes]::Directory
+                try { $attrs = [System.IO.File]::GetAttributes($full) } catch { $attrs = [System.IO.FileAttributes]::Directory }
+                if (($attrs -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                $queue.Enqueue(@{ Path = $full; Depth = ($cur.Depth + 1) })
+            }
+        }
+    }
+    return [pscustomobject]@{ Leaf = $leafMap; Tail = $tailMap; Denied = $denied; Scanned = $scanned; Roots = $rootsDone }
+}
+
+# 给候选打分（保守）：新位置里有"名字含应用名的 .exe" → 高；只有别的 .exe → 中；没有 .exe → 低。
+# 用 IndexOf(OrdinalIgnoreCase) 而不是 -like：应用名里可能带 [ ] 这类通配符字符。
+function Get-CandidateEvidence {
+    param([string]$OldPrefix, [string]$Candidate, [string]$App, [switch]$CheckParent)
+    $want = if ($App) { $App } else { Split-Path -Leaf $OldPrefix }
+    $dirs = @($Candidate)
+    $parent = Split-Path -Parent $Candidate
+    # tail 模式（...\应用名\子目录）里 .exe 通常在上一级，所以那一级也要看
+    if ($CheckParent -and $parent) { $dirs += $parent }
+    $exes = @()
+    foreach ($d in $dirs) {
+        try { $exes += @(Get-ChildItem -LiteralPath $d -File -ErrorAction Stop | Where-Object { $_.Extension -eq '.exe' }) }
+        catch { $exes += @() }   # 读不到就当"没有证据"：置信度自然降到 low，草稿本来就要人核对
+    }
+    # 名字先**归一化**（去掉非字母数字、转小写）再比：目录名 `quark-cloud-drive` 与程序名
+    # `QuarkCloudDrive.exe` 只差连字符，直接比会判成"没有同名程序"（实测：真候选被降级成 medium）。
+    $normWant = ($want -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    $same = @($exes | Where-Object {
+        $n = ($_.BaseName -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+        $n -and $normWant -and ($n -eq $normWant -or $n.Contains($normWant) -or $normWant.Contains($n))
+    })
+    if ($same.Count -gt 0) { return [pscustomobject]@{ Confidence = 'high'; Why = ("新位置有名字含 {0} 的程序 {1}" -f $want, $same[0].Name) } }
+    if ($exes.Count -gt 0) { return [pscustomobject]@{ Confidence = 'medium'; Why = ("新位置有 {0} 个 .exe，但没有名字含 {1} 的" -f $exes.Count, $want) } }
+    return [pscustomobject]@{ Confidence = 'low'; Why = '新位置没有 .exe（可能是数据目录，或装法不同）' }
+}
+
+# 生成草稿文本（纯函数，便于直接测）：**只有高置信的才生成条目**，其余只作为提示列出来。
+# 为什么不高置信之外也生成（注释掉的）条目：实测真实草稿里 `C:\Program Files (x86)\Tencent`
+# 一个前缀就撞出 8 个同名目录（ProgramData / All Users / D:\Program Files …），把它写成条目
+# 只会让人以为"脚本给出了答案"。提示区只列目录，不伪造 Old→New。
+# ⚠ 变量名一律避开"仅大小写不同"的组合：PowerShell 变量名不区分大小写，曾经把列表 `$L` 和
+#   循环变量 `$l` 当成两个变量，于是第一轮循环就把整个列表覆盖成了对象（约定 14）。
+function New-RepointDraft {
+    param([object[]]$High, [object[]]$Hints, [object[]]$Unmatched)
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add('# ==== repair-migrated-apps：改指候选草稿（-DiscoverTargets 生成，**未经验证**）====')
+    $out.Add('# 本文件不会被脚本自动读取。请逐条核对，再把确认的行复制进')
+    $out.Add('#   local\repair-migrated-apps.local.psd1 的 PathMap（顺序敏感：更具体的旧前缀写在前面）。')
+    $out.Add('# 下面**只有高置信条目**：新位置存在名字与应用名相符的 .exe（去掉连字符/大小写后再比）。')
+    $out.Add('# 其余同名目录只列在后面的"提示"区，由人判断，不替你写进映射。')
+    $out.Add('@{')
+    $out.Add('    PathMap = @(')
+    # ⚠ 逗号只能加在**元素之间**，而且必须在**行尾注释之前**：psd1 不允许尾逗号；而把逗号追加到
+    # 整行末尾会把它塞进注释里（`… # 说明,`），数组元素根本没被分开 → 整个文件解析失败。
+    # 两条都是实测踩出来的，所以"多条条目"这件事必须有测试覆盖（只放 1 条时抓不到）。
+    $active = @()
+    foreach ($row in @($High)) {
+        $active += [pscustomobject]@{
+            Entry = ("        @{{ Old = '{0}'; New = '{1}' }}" -f $row.Old, $row.New)
+            Note  = ("   # {0}；{1} 处引用" -f $row.Why, $row.Refs)
+        }
+    }
+    for ($i = 0; $i -lt $active.Count; $i++) {
+        $comma = if ($i -lt $active.Count - 1) { ',' } else { '' }
+        $out.Add($active[$i].Entry + $comma + $active[$i].Note)
+    }
+    $out.Add('    )')
+    if (@($Hints).Count -gt 0) {
+        $out.Add('')
+        $out.Add('    # ---- 同名目录（**未确认**，仅供参考；程序不一定在这里）----')
+        foreach ($hint in @($Hints)) {
+            $out.Add(("#   {0}   （{1} 处引用）" -f $hint.Old, $hint.Refs))
+            foreach ($tip in @($hint.Tips)) { $out.Add(("#       {0}" -f $tip)) }
+        }
+    }
+    if (@($Unmatched).Count -gt 0) {
+        $out.Add('')
+        $out.Add('    # ---- 在扫描范围内**没找到**同名目录的旧前缀（可能在别的盘、或换了名字；也可能纯粹是卸载残留）----')
+        $shown = 0
+        foreach ($miss in @($Unmatched)) {
+            if ($shown -ge 40) { $out.Add(("#   …另有 {0} 条（合计 {1} 条）" -f (@($Unmatched).Count - $shown), @($Unmatched).Count)); break }
+            $out.Add(("#   {0}   （{1} 处引用）" -f $miss.Old, $miss.Refs))
+            $shown++
+        }
+    }
+    $out.Add('}')
+    return ($out -join "`r`n")
+}
+
 # 0 条映射 = **没有执行任何有效的路径检查**，绝不许退化成"本机已无需改指"（最典型的假绿）。
 # 分开说清楚：本机没配（正常，但必须明说）／配置里有条目却合并不出来（脚本自身故障）。
-if ($pathMap.Count -eq 0) {
+if ($pathMap.Count -eq 0 -and -not $DiscoverTargets) {
     Write-Output '⚠ **未执行有效检查**：没有任何"旧路径 -> 新路径"映射可用。'
     if (@($localPathMap).Count -eq 0) {
         Write-Output ("   本机映射未配置或为空：{0}" -f $script:CfgPath)
@@ -432,6 +701,123 @@ $discoveryRoots = @(
     'HKLM:\Software\Classes',
     'HKLM:\Software\WOW6432Node\Classes'
 )
+
+# ---------------------------------------------------------------- -DiscoverTargets
+# 执行块放在这里：此时 $targets（通用登记位置）与 $discoveryRoots 都已就绪。
+if ($DiscoverTargets) {
+    Write-Output '=========================================================='
+    Write-Output 'repair-migrated-apps  -DiscoverTargets   （只读：不改注册表、不需要管理员）'
+    Write-Output '=========================================================='
+    if ($Apply) { Write-Output 'note: -DiscoverTargets 模式下忽略 -Apply（本模式不写注册表）。' }
+
+    $scanRootsEff = @()
+    if ($ScanRoots) { $scanRootsEff = @($ScanRoots) }
+    else {
+        foreach ($d in [System.IO.DriveInfo]::GetDrives()) {
+            if ($d.DriveType -eq [System.IO.DriveType]::Fixed -and $d.IsReady) { $scanRootsEff += $d.RootDirectory.FullName }
+        }
+    }
+    # 提示里刻意不写盘符示例：脚本里出现机器专属路径字面量会被 lint 规则 8 拦下（它自己就该拦，
+    # 而且这条消息本来也不需要举例 —— 用哪块盘是用户的事）。
+    if (@($scanRootsEff).Count -eq 0) { Write-Output 'ERROR: 没有可扫描的固定盘；请用 -ScanRoots 指定要扫的盘或目录（可多个）。'; exit 4 }
+
+    $regRoots = @($discoveryRoots)
+    foreach ($t in $targets) { if ($regRoots -notcontains $t.Root) { $regRoots += $t.Root } }
+    Write-Output ("注册表范围：{0} 个根（与改写阶段同一批位置）" -f @($regRoots).Count)
+    Write-Output ("磁盘范围  ：{0}（最大深度 {1}）" -f (@($scanRootsEff) -join '  '), $MaxDepth)
+    Write-Output ''
+    Write-Output '① 扫注册表里"指向已不存在路径"的登记（只读字符串值）…'
+    $swReg = [Diagnostics.Stopwatch]::StartNew()
+    $dead = Get-DeadPathPrefixes -HiveRoots $regRoots
+    $swReg.Stop()
+    Write-Output ("   找到 {0} 个旧目录前缀（{1:N1} 秒）" -f @($dead.Keys).Count, $swReg.Elapsed.TotalSeconds)
+
+    $existing = @($pathMap.Keys)
+    $todo = @($dead.Keys | Where-Object { $existing -notcontains $_ })
+    if (@($todo).Count -lt @($dead.Keys).Count) {
+        Write-Output ("   其中 {0} 个已在现有映射表里，跳过" -f (@($dead.Keys).Count - @($todo).Count))
+    }
+    if (@($todo).Count -eq 0) {
+        Write-Output '   没有需要找的旧前缀（映射表已覆盖，或这台机器没有"指向已消失路径"的登记）。'
+        exit 0
+    }
+
+    # 给每个旧前缀算出"去磁盘上拿什么名字找"；两段都是通用名（如 D:\a\bin）的直接放弃 ——
+    # 那种路径无法判断是哪个应用，硬猜只会往草稿里塞垃圾（实测第一版草稿就是这样）。
+    $keys = @{}
+    $unidentifiable = New-Object System.Collections.Generic.List[object]
+    foreach ($old in $todo) {
+        $rk = Get-RepointKey $old
+        if (-not $rk) { $unidentifiable.Add([pscustomobject]@{ Old = $old; Refs = [int]$dead[$old] }); continue }
+        $keys[$old] = $rk
+    }
+    $leafNames = @($keys.Values | Where-Object { $_.Mode -eq 'leaf' } | ForEach-Object { $_.Key } | Sort-Object -Unique)
+    $tailNames = @($keys.Values | Where-Object { $_.Mode -eq 'tail' } | ForEach-Object { $_.Key } | Sort-Object -Unique)
+    Write-Output ''
+    Write-Output ("② 扫盘找同名目录（{0} 个按末段 + {1} 个按两级 × {2} 个根，一趟遍历）…" -f @($leafNames).Count, @($tailNames).Count, @($scanRootsEff).Count)
+    $swDisk = [Diagnostics.Stopwatch]::StartNew()
+    $found = Find-WantedDirs -Roots $scanRootsEff -MaxDepth $MaxDepth -LeafNames $leafNames -TailNames $tailNames
+    $swDisk.Stop()
+    Write-Output ("   遍历 {0:N0} 个目录（{1:N1} 秒）；读不到的层 {2} 个" -f $found.Scanned, $swDisk.Elapsed.TotalSeconds, $found.Denied)
+    if ($found.Denied -gt 0) { Write-Output '   （读不到的层会被跳过 —— 候选可能因此不全，这一条不藏着）' }
+    if ($unidentifiable.Count -gt 0) { Write-Output ("   另有 {0} 个旧前缀的目录名太通用（两段都不像应用名），不猜、直接列进草稿末尾" -f $unidentifiable.Count) }
+
+    Write-Output ''
+    Write-Output '③ 给候选打分（新位置有名字含应用名的 .exe → 高置信）…'
+    $high = New-Object System.Collections.Generic.List[object]
+    $hints = New-Object System.Collections.Generic.List[object]
+    $unmatched = New-Object System.Collections.Generic.List[object]
+    foreach ($old in @($keys.Keys)) {
+        $rk = $keys[$old]
+        $refs = [int]$dead[$old]
+        $idx = if ($rk.Mode -eq 'leaf') { $found.Leaf } else { $found.Tail }
+        $lookup = $rk.Key.ToLowerInvariant()
+        $cands = @()
+        if ($idx.ContainsKey($lookup)) { $cands = @($idx[$lookup] | Sort-Object -Unique) }
+        if (@($cands).Count -eq 0) { $unmatched.Add([pscustomobject]@{ Old = $old; Refs = $refs }); continue }
+        $scored = @()
+        foreach ($c in $cands) {
+            $ev = Get-CandidateEvidence -OldPrefix $old -Candidate $c -App $rk.App -CheckParent:($rk.Mode -eq 'tail')
+            $scored += [pscustomobject]@{ Old = $old; New = $c; Refs = $refs; Confidence = $ev.Confidence; Why = $ev.Why }
+        }
+        # 只有高置信的才生成条目；同一个 Old 命中多个时取**路径最短**的那个（其余进提示区），
+        # 免得草稿里出现两条同样的 Old（映射表按 Old 去重，重复只会让"启用哪一条"变得随机）。
+        $hi = @($scored | Where-Object { $_.Confidence -eq 'high' } | Sort-Object { $_.New.Length })
+        if (@($hi).Count -gt 0) { $high.Add($hi[0]) }
+        # 提示区：每个旧前缀最多 3 条（路径短的优先 —— 越短越像"程序目录"而不是数据目录）
+        $tips = @($scored | Where-Object { $_.Confidence -ne 'high' } | Sort-Object { $_.New.Length } |
+                  Select-Object -First 3 | ForEach-Object { $_.New })
+        if (@($tips).Count -gt 0) { $hints.Add([pscustomobject]@{ Old = $old; Refs = $refs; Tips = @($tips) }) }
+    }
+    foreach ($u in $unidentifiable) { $unmatched.Add($u) }
+
+    # 提示区封顶：真实机器上几十条就够看了，全倒出来只会淹掉高置信条目
+    $hintCap = 25
+    $hintsOut = @($hints | Select-Object -First $hintCap)
+    Write-Output ("   高置信 {0} 条 / 提示 {1} 组 / 没找到候选 {2} 条{3}" -f `
+        $high.Count, $hints.Count, $unmatched.Count, $(if ($hints.Count -gt $hintCap) { "（提示只列前 $hintCap 组）" } else { '' }))
+    $draft = New-RepointDraft -High $high.ToArray() -Hints $hintsOut -Unmatched $unmatched.ToArray()
+
+    if (-not $OutFile) { $OutFile = Join-Path $RepoRoot 'local\repair-migrated-apps.discovered.psd1' }
+    if (-not [IO.Path]::IsPathRooted($OutFile)) { $OutFile = Join-Path (Get-Location).Path $OutFile }
+    $outDir = Split-Path -Parent $OutFile
+    if ($outDir -and -not (Test-Exists $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
+    if (Test-Exists $OutFile) {
+        $bak = '{0}.bak-{1}' -f $OutFile, (Get-Date -Format 'yyyyMMdd-HHmmss')
+        Copy-Item -LiteralPath $OutFile -Destination $bak -Force
+        Write-Output ("   （已有同名草稿，先备份为 {0}）" -f (Split-Path -Leaf $bak))
+    }
+    # psd1 必须带 BOM（5.1 才认），所以不用 Set-Content 的默认编码
+    [IO.File]::WriteAllText($OutFile, $draft, (New-Object Text.UTF8Encoding($true)))
+    Write-Output ''
+    Write-Output ("草稿已写入：{0}" -f $OutFile)
+    Write-Output '  它**不会**被脚本自动读取。请逐条核对，再把确认的行复制进'
+    Write-Output '  local\repair-migrated-apps.local.psd1 的 PathMap（模板：config\repair-migrated-apps.local.example.psd1）。'
+    Write-Output ''
+    Write-Output '--- 草稿内容 ---'
+    Write-Output $draft
+    exit 0
+}
 # 搜索的关键词就是本机映射表里的旧前缀（表是空的就没得搜 —— 那种情况在上面已经致命退出了）。
 # 旧用户目录（C:\Users\<旧用户名>）是**另一个、宽得多**的问题：搜它会拖进所有曾在旧用户目录里
 # 待过的无关程序（GIMP、360se、PowerToys、GitHub Desktop…），而它们的路径没有有效的新目标，
