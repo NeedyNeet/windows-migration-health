@@ -8,6 +8,7 @@
 #  本文件覆盖：
 #    · 硬性约定 3  —— 禁止按 .NET 异常类型 catch
 #    · 硬性约定 8  —— scripts\ 下不得出现机器专属路径字面量
+#    · 硬性约定 10 —— 不得调用不存在的 .NET 成员（实测：[System.IO.Directory]::GetAttributes 不存在）
 #    · 硬性约定 14 —— [IO.File]::* 用的是**进程 CWD**（不是 PowerShell 的 cd），不得配相对路径字面量
 #    · 硬性约定 14 —— Get-ChildItem -Filter 不带 -Recurse 会静默漏掉子目录
 #  刻意**不**在这里覆盖的（已有归属）：
@@ -211,6 +212,46 @@ function Find-NestedFunction {
     return $out
 }
 
+# 规则 9：调用了**不存在**的 .NET 成员。
+# 实测事故（2026-10-05 发现）：`[System.IO.Directory]::GetAttributes` 这个方法压根不存在
+# （`[System.IO.Directory].GetMethods()` 里没有它），于是它**恒抛 RuntimeException**：
+#   * health-check 的 Get-Status 里，下游两个分支（$cls2 为空 → ok；属 missing 类 → missing）
+#     成了死代码，所有走到那里的路径全被兜底成 'denied'；
+#   * health-fix 的 Test-Missing 里同样两个分支死掉，一律 return $false（偏保守，所以没出事故）。
+# 这类错误不报错、只静默改变判定 —— 正是本项目最怕的那种。判据用反射：代码行里出现
+# `[类型]::成员(` 就用 GetMethods() 确认该类型真有这个方法（含继承的公开方法）。
+# 只查带 `(` 的调用（属性/枚举值不查）；类型解析不了就跳过（不为拼错的类型名制造噪音）。
+# 类型名是从 `[` 里取出的，再走 Invoke-Expression —— 判据正则把它限定成 `[A-Za-z_][\w.+]*`
+# （不含引号/分号/括号/反引号），所以这里不存在"执行文件里任意代码"的风险。
+function Find-MissingDotNetMember {
+    param([string[]]$Lines)
+    $out = @()
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        $l = $Lines[$i]
+        if ($l.TrimStart().StartsWith('#')) { continue }
+        foreach ($m in [regex]::Matches($l, '\[([A-Za-z_][\w\.\+]*)\]::([A-Za-z_]\w*)\s*\(')) {
+            $typeName = $m.Groups[1].Value
+            $member   = $m.Groups[2].Value
+            # `::new(...)` 是 PowerShell 的构造语法，不是方法名（GetMethods() 里当然没有它）。
+            if ($member -eq 'new') { continue }
+            $t = $null
+            try { $t = [type]::GetType($typeName, $false) } catch { $t = $null }
+            if (-not $t) {
+                # 短名（[Math]、[IO.File]、[regex]…）交给 PowerShell 自己的类型解析
+                try { $t = Invoke-Expression ('[{0}]' -f $typeName) } catch { $t = $null }
+            }
+            if (-not $t) { continue }
+            $found = @()
+            try { $found = @($t.GetMethods() | Where-Object { $_.Name -eq $member }) } catch { $found = @() }
+            if ($found.Count -eq 0) {
+                if (Test-LintExempt $Lines $i) { continue }
+                $out += [pscustomobject]@{ Line = $i + 1; Text = $l.Trim(); Type = $typeName; Member = $member }
+            }
+        }
+    }
+    return $out
+}
+
 # 规则 8：scripts\ 下不得出现**机器专属路径字面量**（硬性约定 8 的机械部分）。
 # 判据（刻意保守，宁漏不误报）：
 #   * 盘符不是 C: 的绝对路径（`D:\...`、`E:\...`）—— C: 是 Windows 的默认系统盘，系统路径
@@ -352,6 +393,21 @@ Test-Case '规则自测：每条规则都能抓到已知违规，也不误报' {
     Assert-True ($c -eq 0) ("整行注释不该被抓到，实际 {0}" -f $c)
     $c = @(Find-MachinePathLiteral @('# lint-ok: 模板示例', '''D:\OldAppFolder'',''')).Count
     Assert-True ($c -eq 0) ("上一行豁免应当生效，实际 {0}" -f $c)
+    # 规则 9：不存在的 .NET 成员
+    $c = @(Find-MissingDotNetMember @("[void][System.IO.Directory]::GetAttributes('C:\')")).Count
+    Assert-True ($c -eq 1) ("不存在的成员应抓到 1 处，实际 {0}" -f $c)
+    $c = @(Find-MissingDotNetMember @("[void][System.IO.File]::GetAttributes('C:\')")).Count
+    Assert-True ($c -eq 0) ("存在的成员不该被抓到，实际 {0}" -f $c)
+    $c = @(Find-MissingDotNetMember @('$m = [regex]::Match(''a'', ''b'')')).Count
+    Assert-True ($c -eq 0) ("短类型名也要能解析，实际 {0}" -f $c)
+    $c = @(Find-MissingDotNetMember @("[System.IO.File]::NoSuchMethodXyz('C:\')")).Count
+    Assert-True ($c -eq 1) ("拼错的方法名应抓到 1 处，实际 {0}" -f $c)
+    $c = @(Find-MissingDotNetMember @("[Some.UnloadableType]::Foo('x')")).Count
+    Assert-True ($c -eq 0) ("类型加载不了应跳过，实际 {0}" -f $c)
+    $c = @(Find-MissingDotNetMember @('[System.IO.File]::ReadAllText  # 无括号，不查属性')).Count
+    Assert-True ($c -eq 0) ("不查属性/字段，实际 {0}" -f $c)
+    $c = @(Find-MissingDotNetMember @('$e = [Text.UTF8Encoding]::new($true)')).Count
+    Assert-True ($c -eq 0) ("::new() 是构造语法，不该被抓到，实际 {0}" -f $c)
 }
 Test-Case '硬性约定 3：没有按 .NET 异常类型 catch 的地方' {
     $bad = @()
@@ -415,6 +471,14 @@ Test-Case '硬性约定 8：scripts\ 下不得出现机器专属路径字面量�
     $bad = @()
     foreach ($f in (Get-ChildItem (Join-Path $repo 'scripts') -Recurse -File -Filter '*.ps1')) {
         $bad += @(Find-MachinePathLiteral (Get-Content $f.FullName -Encoding UTF8) | ForEach-Object { "{0}:{1}  字面量={2}" -f $f.Name, $_.Line, $_.Literal })
+    }
+    Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
+}
+
+Test-Case '硬性约定 10：脚本里不许调用不存在的 .NET 成员（实测：Directory.GetAttributes 根本不存在）' {
+    $bad = @()
+    foreach ($f in Get-LintTargets) {
+        $bad += @(Find-MissingDotNetMember (Get-Content $f.FullName -Encoding UTF8) | ForEach-Object { "{0}:{1}  [{2}]::{3}" -f $f.Name, $_.Line, $_.Type, $_.Member })
     }
     Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
 }

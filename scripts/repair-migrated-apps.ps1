@@ -62,6 +62,19 @@ function Test-Exists([string]$p) {
     return $false
 }
 
+# 把"读一个注册表键失败"时的异常类型名翻译成状态。纯函数，单独成函数是为了能被直接测
+# （同 health-check 的 Get-NeedlesState 思路）。实测（PS 7.6.6 与 5.1.26100 结果一致）：
+#   键不存在        -> ItemNotFoundException
+#   盘不存在        -> DriveNotFoundException
+#   HKLM:\SECURITY 这类权限受限 -> SecurityException
+# 说不清的一律返回 unknown —— 调用方按"没读到"记账，绝不按"不存在"处理（约定 10）。
+function Get-KeyProbeState([string]$ExceptionTypeName) {
+    if (-not $ExceptionTypeName) { return 'ok' }
+    if ($ExceptionTypeName -in 'SecurityException','UnauthorizedAccessException') { return 'denied' }
+    if ($ExceptionTypeName -in 'ItemNotFoundException','DriveNotFoundException','DirectoryNotFoundException','PathNotFoundException') { return 'missing' }
+    return 'unknown'
+}
+
 # 机器专属映射：不写死在本文件里；真值放在 local\repair-migrated-apps.local.psd1
 $script:CfgPath = Join-Path $RepoRoot 'local\repair-migrated-apps.local.psd1'
 $script:Cfg = $null
@@ -197,6 +210,9 @@ $script:RunStamp    = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:backupTried = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $script:backupOk    = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $script:skipped     = @()
+# 读不到（权限）的键：既没被改写、也没被确认"无需改写"。**必须**单独记账并在结尾报出来，
+# 否则"读不到"会静默地长成"检查过了、没问题"（约定 10 + 报告不许有假绿）。
+$script:unreadable  = @()
 
 function Repair-KeyTree {
     param(
@@ -204,15 +220,28 @@ function Repair-KeyTree {
         [int]$Depth = 4,
         [switch]$WithProfileMap
     )
-    if (-not (Test-Path -LiteralPath $Root)) { return }
+    # 这里刻意**没有** Test-Path 快速门：Test-Path 在权限受限的键上同样返回 False，于是"读不到"
+    # 会被当成"不存在"而静默跳过 —— 正是本项目最忌讳的那种跳过（约定 10）。
+    # 统一走 Get-Item + try/catch，把失败翻译成 missing（正常，显式清单里很多键是可选的）
+    # 或 denied/unknown（记账，结尾如实报出来）。
     $queue = New-Object System.Collections.Queue
     $queue.Enqueue([pscustomobject]@{ Key = $Root; Level = 0 })
     while ($queue.Count -gt 0) {
         $item = $queue.Dequeue()
         $key  = $item.Key
         $lvl  = $item.Level
-        $keyItem = Get-Item -LiteralPath $key -ErrorAction SilentlyContinue
-        if (-not $keyItem) { continue }
+        $keyItem = $null
+        $state = 'ok'
+        try { $keyItem = Get-Item -LiteralPath $key -ErrorAction Stop }
+        catch {
+            $ex = $_.Exception
+            while ($ex.InnerException) { $ex = $ex.InnerException }
+            $state = Get-KeyProbeState $ex.GetType().Name
+        }
+        if ($state -ne 'ok') {
+            if ($state -ne 'missing') { $script:unreadable += [pscustomobject]@{ Key = $key; Why = ("本键读不到（{0}）" -f $state) } }
+            continue
+        }
 
         foreach ($name in @($keyItem.GetValueNames())) {
             $raw = $keyItem.GetValue($name, $null, 'DoNotExpandEnvironmentNames')
@@ -234,7 +263,16 @@ function Repair-KeyTree {
             }
         }
         if ($lvl -ge $Depth) { continue }
-        foreach ($sub in (Get-ChildItem -LiteralPath $key -ErrorAction SilentlyContinue)) {
+        # 子键枚举失败（权限）同样不能当成"这层没有子键"：那样整棵子树会被静默漏掉。
+        $subs = $null
+        try { $subs = @(Get-ChildItem -LiteralPath $key -ErrorAction Stop) }
+        catch {
+            $ex = $_.Exception
+            while ($ex.InnerException) { $ex = $ex.InnerException }
+            $script:unreadable += [pscustomobject]@{ Key = $key; Why = ("子键枚举失败（{0}）" -f (Get-KeyProbeState $ex.GetType().Name)) }
+            continue
+        }
+        foreach ($sub in $subs) {
             $subPath = ($key.TrimEnd('\') + '\' + $sub.PSChildName)
             $queue.Enqueue([pscustomobject]@{ Key = $subPath; Level = ($lvl + 1) })
         }
@@ -436,6 +474,17 @@ if ($script:skipped.Count -gt 0) {
     }
     Write-Output '  (a JetBrains uninstaller is the usual case: only JetBrains Toolbox ships it now.'
     Write-Output '   Reinstall Toolbox to manage those IDEs, or delete the dead entry by hand.)'
+}
+
+# 读不到的键：既没改写也没确认 —— 必须显式列出来，否则"没读到"会被读成"检查过了没问题"。
+if ($script:unreadable.Count -gt 0) {
+    Write-Output ''
+    Write-Output ("--- 读不到、因此**没有被检查**的键（{0} 个）---" -f $script:unreadable.Count)
+    Write-Output '  这些键下的登记既没被改写，也**没有**被确认"无需改写" —— 别把这一节读成"干净"。'
+    foreach ($u in ($script:unreadable | Select-Object -First 10)) {
+        Write-Output ("    {0}   {1}" -f $u.Key, $u.Why)
+    }
+    if ($script:unreadable.Count -gt 10) { Write-Output ("    …另有 {0} 个（完整清单不落盘，需要时用 -Apply 之外的只读方式单独导出）" -f ($script:unreadable.Count - 10)) }
 }
 
 # ---------------------------------------------------------------- shortcuts

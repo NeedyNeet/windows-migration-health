@@ -250,7 +250,12 @@ function Get-Status([string]$path) {
     if ($cls -in 'FileNotFoundException','DirectoryNotFoundException') { return 'missing' }
     # 其它异常 → 用 Test-Path 兜底
     if (Test-Path -LiteralPath $path -ErrorAction SilentlyContinue) { return 'ok' }
-    $cls2 = Get-ExceptionClass { [void][System.IO.Directory]::GetAttributes($path) }
+    # ⚠ 这里原来写的是 [System.IO.Directory]::GetAttributes —— **这个方法不存在**，于是它恒抛
+    # RuntimeException：下面两个分支（$cls2 为空 → ok；$cls2 属 missing 类 → missing）全是死代码，
+    # 所有走到这里的路径都被兜底成 'denied'。实测（PS 7.6.6 与 5.1.26100 一致）：
+    # [System.IO.Directory].GetMethods() 里没有 GetAttributes，而 [System.IO.File]::GetAttributes
+    # **对目录同样有效**。执行者：tests\lint.tests.ps1 规则 9（调用了不存在的 .NET 成员）。
+    $cls2 = Get-ExceptionClass { [void][System.IO.File]::GetAttributes($path) }
     if (-not $cls2) { return 'ok' }
     if ($cls2 -in 'FileNotFoundException','DirectoryNotFoundException','IOException','ArgumentException','NotSupportedException') { return 'missing' }
     return 'denied'
@@ -863,6 +868,29 @@ function Find-OldPathHits {
     return $hits
 }
 
+# 把"读一个路径失败"时的异常类型名翻译成状态。纯函数，单独成函数是为了能被直接测
+# （同 Get-NeedlesState 的思路）。实测（PS 7.6.6 与 5.1.26100 一致，用 [System.IO.File]::GetAttributes
+# —— 它对目录同样有效；注意 **[System.IO.Directory] 没有 GetAttributes 这个方法**）：
+#   路径不存在 -> FileNotFoundException      盘不存在 -> DirectoryNotFoundException
+# 说不清的一律返回 'denied'，绝不返回 'no-root' —— 约定 10。这里 'denied' 的含义是"**读不到**"
+# （权限问题，或路径非法之类说不清的原因），不是"拒绝访问"的字面意思：宁可说"本节没查"，
+# 也不能把一个读不到的根说成"不存在、于是没什么可扫"。实测：'C:\bad<>name' 在 7.x 抛 IOException、
+# 在 5.1 抛 ArgumentException —— 两个引擎都归到 denied，措辞一致。
+function Get-PathProbeState([string]$ExceptionTypeName) {
+    if (-not $ExceptionTypeName) { return 'ok' }
+    if ($ExceptionTypeName -in 'UnauthorizedAccessException','SecurityException') { return 'denied' }
+    if ($ExceptionTypeName -in 'FileNotFoundException','DirectoryNotFoundException') { return 'no-root' }
+    return 'denied'
+}
+
+# 判断"扫描根"的可读状态：ok / no-root / denied。为什么不用裸 Test-Path：权限受限的目录上它
+# 静默返回 False，于是"读不到"会被报成"根不存在" —— 两者都落到"本节未执行有效检查"，
+# 但措辞必须分清（约定 10：读不到 ≠ 不存在）。
+function Get-ScanRootState([string]$Root) {
+    if (-not $Root) { return 'no-root' }
+    return Get-PathProbeState (Get-ExceptionClass { [void][System.IO.File]::GetAttributes($Root) })
+}
+
 # 在"程序所在根目录"下扫文本配置里是否还写死着清单里的旧路径。
 # 单独成函数是为了让测试够得着（AST 抽取只能抽函数），而且**纯函数**：只返回数据，
 # 不打印、不记 findings —— 打印与记账留给调用方，于是"扫了 0 个文件"这种状态没法被
@@ -870,8 +898,10 @@ function Find-OldPathHits {
 # 返回：Status = ok / no-root / no-files，外加 Root、Files、Hits(File/Needle)。
 function Get-ConfigFileOldPathHits {
     param([string]$Root, [string[]]$Needles, [int]$MaxFiles = 3000)
-    if (-not $Root -or -not (Test-Path -LiteralPath $Root)) {
-        return [pscustomobject]@{ Status = 'no-root'; Root = $Root; Files = 0; Hits = @() }
+    # 根的状态交给 Get-ScanRootState（读不到 ≠ 不存在）；只有 ok 才继续扫。
+    $rootState = Get-ScanRootState $Root
+    if ($rootState -ne 'ok') {
+        return [pscustomobject]@{ Status = $rootState; Root = $Root; Files = 0; Hits = @() }
     }
     # 扩展名过滤用 `-Path`（目录本身，尾部不带 *），**不能用 `-LiteralPath`**：
     # 实测对比 PS 7.6.6 与 5.1.26100（同一份命令、同一个小目录）：
@@ -1013,7 +1043,10 @@ W ("清单 {0} 条 × 根键 {1} 个，只遍历一遍：只读字符串类型�
                 $cfgScan = Get-ConfigFileOldPathHits -Root $AppsRoot -Needles $list
                 W ("**文本配置里的旧路径**（扫描 {0} 下的 conf/ini/json/properties/txt 等）" -f $cfgScan.Root)
                 W ''
-                if ($cfgScan.Status -eq 'no-root') {
+                if ($cfgScan.Status -eq 'denied') {
+                    W ("- ⚠ 扫描根**读不到**（权限或路径非法）：{0} —— **本节未执行有效检查**。" -f $cfgScan.Root)
+                    AddFinding '警告' '体检范围' $cfgScan.Root '扫描根读不到（权限或路径非法）' '未执行检查' '用能读到该目录的权限重跑，或换一个扫描根（读不到 ≠ 不存在）'
+                } elseif ($cfgScan.Status -eq 'no-root') {
                     W ("- ⚠ 扫描根不存在：{0} —— **本节未执行有效检查**。" -f $cfgScan.Root)
                     AddFinding '警告' '体检范围' $cfgScan.Root '扫描根不存在' '未执行检查' '换成真实存在的程序根目录，或去掉 -ScanConfigFiles'
                 } elseif ($cfgScan.Status -eq 'no-files') {

@@ -15,6 +15,9 @@
 $repo   = Get-RepoRoot
 $target = Join-Path $repo 'scripts\health-check.ps1'
 
+Invoke-Expression (Get-ScriptFunctionText -Path $target -Name 'Get-ExceptionClass')
+Invoke-Expression (Get-ScriptFunctionText -Path $target -Name 'Get-PathProbeState')
+Invoke-Expression (Get-ScriptFunctionText -Path $target -Name 'Get-ScanRootState')
 Invoke-Expression (Get-ScriptFunctionText -Path $target -Name 'Get-ConfigFileOldPathHits')
 
 $tmpRoot = Join-Path ([IO.Path]::GetTempPath()) ('wmh-cfgscan-' + [guid]::NewGuid().ToString('N').Substring(0,6))
@@ -67,6 +70,35 @@ try {
         $r = Get-ConfigFileOldPathHits -Root $dir -Needles @('C:\Users\old')
         Assert-Equal $r.Files 1 ("只应把 .json 计进文件数（.md 不在清单里），实际 {0}" -f $r.Files)
         Assert-Equal @($r.Hits).Count 1 ("应当命中 1 处（子目录里的那份），实际 {0}" -f @($r.Hits).Count)
+    }
+
+    # ---- 扫描根的状态：读不到 ≠ 不存在（约定 10）----
+    Test-Case '扫描根状态：空值 / 不存在 -> no-root，存在 -> ok' {
+        Assert-Equal (Get-ScanRootState '') 'no-root' '空路径应当是 no-root'
+        Assert-Equal (Get-ScanRootState $null) 'no-root' '$null 应当是 no-root'
+        Assert-Equal (Get-ScanRootState (Join-Path $tmpRoot 'nope')) 'no-root' '不存在的目录应当是 no-root'
+        Assert-Equal (Get-ScanRootState $tmpRoot) 'ok' '存在的目录应当是 ok'
+        # 状态为 no-root 时，扫描函数也必须如实返回 no-root（不许自己变成"扫过且干净"）
+        Assert-Equal (Get-ConfigFileOldPathHits -Root (Join-Path $tmpRoot 'nope') -Needles @('x')).Status 'no-root' '不存在的根要原样上报'
+    }
+
+    Test-Case '扫描根读不到 -> denied（不许报成"根不存在"）' {
+        # 判定表：输入是实测到的异常类型名（[System.IO.File]::GetAttributes 的真实行为）。
+        Assert-Equal (Get-PathProbeState '') 'ok' '没有异常应当是 ok'
+        Assert-Equal (Get-PathProbeState 'FileNotFoundException') 'no-root' '路径不存在实测抛 FileNotFoundException'
+        Assert-Equal (Get-PathProbeState 'DirectoryNotFoundException') 'no-root' '盘不存在实测抛 DirectoryNotFoundException'
+        Assert-Equal (Get-PathProbeState 'UnauthorizedAccessException') 'denied' '权限异常必须判 denied'
+        Assert-Equal (Get-PathProbeState 'SecurityException') 'denied' '安全异常必须判 denied'
+        Assert-Equal (Get-PathProbeState 'IOException') 'denied' '说不清的一律 denied（"没读到"），绝不报"不存在"'
+        Assert-Equal (Get-PathProbeState 'ArgumentException') 'denied' '同上（5.1 对非法路径抛的就是这个）'
+
+        # 端到端：非法路径在两个引擎下都必然失败（7.x 抛 IOException、5.1 抛 ArgumentException），
+        # 于是确定性地走到 denied —— "说不清的失败"绝不能被报成"根不存在"。
+        # 注：真正的 ACL 受限目录**无法可靠合成**（实测：即使 icacls /deny 当前用户，
+        # GetAttributes 仍然成功），那条路只能靠上面的判定表覆盖。
+        $bad = 'C:\bad<>name'
+        Assert-Equal (Get-ScanRootState $bad) 'denied' ("非法路径必须判 denied（实测 {0}）" -f $bad)
+        Assert-Equal (Get-ConfigFileOldPathHits -Root $bad -Needles @('x')).Status 'denied' '扫描函数要原样把 denied 传出来（调用方据此报"未执行有效检查"）'
     }
 } finally {
     Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -32,12 +32,51 @@ if (-not (Test-Path (Join-Path $RepoRoot 'scripts'))) { $RepoRoot = $ScriptDir }
 $OutBase   = Join-Path $RepoRoot 'local'
 
 $script:CfgPath = Join-Path $OutBase 'health-fix.local.psd1'
+
+# 读本机配置，返回 Status = ok / missing / denied / broken（外加 Cfg 与 Error）。
+# 单独成函数是为了让测试够得着（AST 抽取只能抽函数）—— 这三个失败模式都属于
+# "报告说没事、其实没查"那一族，必须由测试真跑，而不是靠人工 review：
+#   * 文件**不存在** -> missing：正常（该文件属于本机、不进仓库），提示一句继续跑；
+#   * 文件**读不到**（权限）-> denied：**读不到 ≠ 没有配置**（约定 10），必须致命退出；
+#   * 文件**语法坏了** -> broken：Import-PowerShellDataFile 的失败在
+#     $ErrorActionPreference='Continue' 下是**非终止**错误，赋值会静默落空成 $null ——
+#     于是"配置写坏了"被当成"没有配置"，A 段改指表一条都不生效而输出只有一句"将不生效（正常）"。
+function Read-LocalConfig([string]$Path) {
+    if (-not $Path) { return [pscustomobject]@{ Status = 'missing'; Cfg = $null; Error = $null } }
+    $cls = $null
+    try { [void][System.IO.File]::GetAttributes($Path) }
+    catch {
+        $ex = $_.Exception
+        while ($ex.InnerException) { $ex = $ex.InnerException }
+        $cls = $ex.GetType().Name
+    }
+    if ($cls) {
+        if ($cls -in 'UnauthorizedAccessException','SecurityException') { return [pscustomobject]@{ Status = 'denied'; Cfg = $null; Error = $cls } }
+        if ($cls -in 'FileNotFoundException','DirectoryNotFoundException')    { return [pscustomobject]@{ Status = 'missing'; Cfg = $null; Error = $null } }
+        # 说不清的按"读不到"处理：宁可致命退出，也不静默按空配置继续
+        return [pscustomobject]@{ Status = 'denied'; Cfg = $null; Error = $cls }
+    }
+    try {
+        $cfg = Import-PowerShellDataFile -LiteralPath $Path -ErrorAction Stop
+        return [pscustomobject]@{ Status = 'ok'; Cfg = $cfg; Error = $null }
+    } catch {
+        return [pscustomobject]@{ Status = 'broken'; Cfg = $null; Error = $_.Exception.Message }
+    }
+}
+
 $script:Cfg = $null
-if (Test-Path -LiteralPath $script:CfgPath) {
-    # Import-PowerShellDataFile 只读数据、不执行代码，5.1 与 7.x 都可用
-    $script:Cfg = Import-PowerShellDataFile -LiteralPath $script:CfgPath
-} else {
+$cfgRead = Read-LocalConfig $script:CfgPath
+if ($cfgRead.Status -eq 'missing') {
     Write-Output ("提示：未找到 {0} —— 本机专属规则将不生效（正常：该文件属于本机，不进仓库）。" -f $script:CfgPath)
+} elseif ($cfgRead.Status -ne 'ok') {
+    # denied / broken：绝不能降级成"没有配置"继续跑（那会让 A 段静默失效而报告看起来正常）。
+    Write-Output ("ERROR: 读不了本机配置 {0}（{1}）" -f $script:CfgPath, $cfgRead.Status)
+    if ($cfgRead.Error) { Write-Output ("       {0}" -f $cfgRead.Error) }
+    Write-Output '       先修好它（模板见 config\health-fix.local.example.psd1）再重跑。'
+    Write-Output '       **本次未执行有效检查** —— 不要把它读成"本机没有专属规则"。'
+    exit 3
+} else {
+    $script:Cfg = $cfgRead.Cfg
 }
 
 # 改名前的用户目录名（没改过用户目录名就留空）。
@@ -180,7 +219,11 @@ function Test-Missing([string]$p) {
     if ($cls -in 'UnauthorizedAccessException','SecurityException') { return $false }
     if ([System.IO.Path]::GetExtension($p) -eq '' -and (Test-Path -LiteralPath ($p + '.exe') -ErrorAction SilentlyContinue)) { return $false }
     if ($cls -in 'FileNotFoundException','DirectoryNotFoundException') { return $true }
-    $cls2 = Get-ExceptionClass { [void][System.IO.Directory]::GetAttributes($p) }
+    # ⚠ 这里原来写的是 [System.IO.Directory]::GetAttributes —— **这个方法不存在**，恒抛 RuntimeException，
+    # 于是下面两个分支（空 → 不删；属 missing 类 → 删）都是死代码，一律落到 return $false。
+    # 后果**偏保守**（少删而不是误删）所以没出事故，但它让"目标确实不存在"这条判据少了一半。
+    # [System.IO.File]::GetAttributes 对目录同样有效。执行者：tests\lint.tests.ps1 规则 9。
+    $cls2 = Get-ExceptionClass { [void][System.IO.File]::GetAttributes($p) }
     if (-not $cls2) { return $false }
     if ($cls2 -in 'FileNotFoundException','DirectoryNotFoundException','IOException','ArgumentException','NotSupportedException') { return $true }
     return $false
@@ -198,7 +241,11 @@ function Test-Missing([string]$p) {
 Say '########## A. 改路径 ##########'
 # 改指表来自 local\health-fix.local.psd1 的 Repoint 数组（机器专属，不进仓库）。
 # 每条：Path（注册表键的 PowerShell 路径）、ValueName（'' = 默认值）、Old、New、Why。
-$repoint = if ($script:Cfg -and $script:Cfg.Repoint) { @($script:Cfg.Repoint) } else { @() }
+# 先初始化再赋值（不要写成 `= if (...)`）：语句输出的数组在只有 1 个元素时会被拆包成单对象，
+# 那时下面的 foreach 会退化成"遍历那个 Hashtable 本身"——这里侥幸能工作（PowerShell 不枚举
+# Hashtable，而 $x.Path 走键查找恰好取到值），但不该靠这种巧合。同一处已在 repair 里吃过亏。
+$repoint = @()
+if ($script:Cfg -and $script:Cfg.Repoint) { $repoint = @($script:Cfg.Repoint) }
 foreach ($x in $repoint) {
     Set-Text ([string]$x.Path) ([string]$x.ValueName) ([string]$x.Old) ([string]$x.New) ([string]$x.Why)
 }
