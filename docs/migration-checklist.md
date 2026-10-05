@@ -148,10 +148,11 @@ reg query "HKCU\Software\Classes" /f "D:\mpv-lazy" /s
 reg query "HKLM\Software\Microsoft\Windows\CurrentVersion" /f "D:\mpv-lazy" /s
 ```
 
-两个必须知道的判定细节：
+三个必须知道的判定细节：
 
 1. `reg query` 对**不存在的键返回的文案随系统语言变化**（英文 `unable to find`、中文"找不到"）→ 脚本里不要用错误文本判断存在性。
 2. 把旧路径按映射表换成新路径后，**先确认新目标真的存在**；不存在就**不要写入一个同样无效的路径**，而是报告出来人工决定。（否则就是把死路径改成另一个死路径。）
+3. `reg query /f /s` 是**逐键比对**的，**看不到"跨层拼出来"的路径** —— 例如开始菜单磁贴把路径拆成多层键名存（`…\Start\TileProperties\W~D:\JetBrains\PyCharm\…`，整条路径横跨 5 层键名）。本机实测这类引用有 **52 条**，`reg query` 一条也找不到。这类只能靠 `health-check` 的旧路径扫描（它把键路径拼起来再比对，见 [12 类登记参考 §2](registry-reference.md)）。
 
 ### 4.2 别忘了应用自己配置里写死的绝对路径
 

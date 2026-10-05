@@ -57,12 +57,21 @@ reg query "HKCU\Software\Classes" /f "D:\mpv-lazy" /s
 reg query "HKLM\Software\Microsoft\Windows\CurrentVersion" /f "D:\mpv-lazy" /s
 ```
 
+**一个结构性盲区**：`reg query /f /s` 是**逐键、逐值**比对的，所以**看不到"跨层拼出来"的路径** —— 例如开始菜单的磁贴缓存把路径拆成多层键名存：
+
+```text
+…\CurrentVersion\Start\TileProperties\W~D:\JetBrains\PyCharm\bin\pycharm64
+                                           ↑ 键名是 "W~D:"，整条路径横跨 5 层键名
+```
+
+本机实测这类引用有 **52 条**，`reg query` **一条也找不到**（GUI 搜索工具同理）。本仓库脚本改用 .NET 遍历后能看到 —— 因为它是把键路径拼起来再比对。
+
 两个判定细节（都实际翻过车）：
 
 1. **`reg query` 的报错文案随系统语言变化**（英文 `unable to find` / 中文"找不到"）→ 脚本里不要用错误文本判断键是否存在，用 `Test-Path` 或 `OpenSubKey() -ne $null`。
 2. **改完要确认"新目标真的存在"**：把旧路径换成新路径前先验证目标文件；不存在就不要写入一个同样无效的路径，而是报告出来人工决定。
 
-成本提示：`reg query /f /s` 的开销 ≈ **根键数 × 关键词数**（每个约 5~10 秒）。关键词要收敛，或者改写一次索引再在内存里判断。
+**成本提示（实测）**：`reg query /f /s` 的开销 ≈ **根键数 × 关键词数**，**单次约 1 分钟**。本机实测 11 条清单 × 5 个根键 = 55 次 ≈ **52~55 分钟**；不同根键差异极大（`…\Microsoft\Windows\CurrentVersion` 单次就 217 秒，因为它要把**每一个值的数据**读出来 —— 实测占单次耗时的 98%，而枚举键名只要 2.3 秒、枚举值名 4.2 秒）。
 
 ---
 
@@ -99,13 +108,14 @@ reg query "HKLM\Software\Microsoft\Windows\CurrentVersion" /f "D:\mpv-lazy" /s
 
 ---
 
-## 5. 三类别乱动
+## 5. 不要动的几类
 
 | 不要动 | 原因 |
 |---|---|
 | Windows 自带项（`CLSID_*`、`ms-*`、系统命名空间项、`Http`/`https`/`mailto` 等协议） | 删了会破坏系统功能；检查脚本对它们有白名单/跳过规则 |
 | **由启动器自我维护的记录**（Steam 游戏、游戏反作弊组件等） | 删掉会被重建，还可能影响游戏识别——交给对应启动器 |
 | **卸载器仍然存在的"半残留"**（程序目录已删、但厂商卸载器还在） | 这类用厂商官方清理工具或 Geek 处理更安全；脚本对它们保守保留 |
+| **MSI 安装数据库**（`…\CurrentVersion\Installer\…`、`Classes\Installer\Products`） | 这是 Windows Installer 自己的账本（产品记录 / 每个组件的基准路径 / 上次用的安装源位置）。**手改没有受支持的方式**，改坏会让 repair 与卸载失效。它里面的旧路径唯一正确的解法是**重装或修复那个产品**，让安装器自己重写；已经不用的产品，这些记录是无害的遗物 —— 所以体检报告把它们标成"提示"而不是"警告" |
 
 ---
 
