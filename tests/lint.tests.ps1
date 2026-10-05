@@ -177,6 +177,39 @@ function Find-SilentCatch {
     }
     return $out
 }
+# 规则 7：函数定义必须在**顶层**（不嵌在 if / foreach / for / while / try / switch / 另一个函数里）。
+# 实测事故：Get-OldPathKind 的定义被编辑脚本插进了 `if ($hits.Count -eq 0) { … }` 分支 ——
+# PowerShell 的函数是**执行到定义语句那一刻**才生效的，于是"命中 0 个键"时才定义，
+# 真实运行（有命中）时调用直接报「术语不会被识别」。更阴的是 AST 抽取能跨层找到它，
+# 所以所有 extract 型测试全绿，只有真跑那条路径才炸。
+# 判据只保留"嵌在分支里"这一半：**词法顺序 ≠ 执行顺序** —— 函数体内先调用、后定义是合法的
+# （本仓已有 2 处、实测都正确），把那种写法报成违规只会制造噪音，所以不查"定义前先调用"。
+function Find-NestedFunction {
+    param([string]$Path)
+    $out = @()
+    if (-not (Test-Path -LiteralPath $Path)) { return $out }
+    $tokens = $null; $errs = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errs)
+    if ($errs -and @($errs).Count -gt 0) { return $out }
+    foreach ($d in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        $q = $d.Parent
+        while ($q) {
+            if ($q -is [System.Management.Automation.Language.IfStatementAst] -or
+                $q -is [System.Management.Automation.Language.ForEachStatementAst] -or
+                $q -is [System.Management.Automation.Language.ForStatementAst] -or
+                $q -is [System.Management.Automation.Language.WhileStatementAst] -or
+                $q -is [System.Management.Automation.Language.TryStatementAst] -or
+                $q -is [System.Management.Automation.Language.SwitchStatementAst] -or
+                $q -is [System.Management.Automation.Language.FunctionDefinitionAst]) {
+                $out += [pscustomobject]@{ Line = $d.Extent.StartLineNumber; Func = $d.Name }
+                break
+            }
+            $q = $q.Parent
+        }
+    }
+    return $out
+}
+
 Test-Case '规则自测：每条规则都能抓到已知违规，也不误报' {
     # 每条断言都把**实测数目**写进消息：这个文件自己就是检查器，检查器出问题时，
     # 失败信息必须能直接告诉我"抓到了几处"，否则调试它又得靠猜。
@@ -248,6 +281,25 @@ Test-Case '规则自测：每条规则都能抓到已知违规，也不误报' {
         $hits3 = @(Find-SilentCatch $probe3)
         Assert-Equal $hits3.Count 1 ("规则 6 应当只抓到 A 一处，实际 {0}" -f $hits3.Count)
     } finally { Remove-Item -LiteralPath $probe3 -Force -ErrorAction SilentlyContinue }
+    # 规则 7：嵌在 if / foreach / 函数里的定义必须被抓到；顶层的不得误报
+    $probe4 = Join-Path ([IO.Path]::GetTempPath()) ('wmh-lint7-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        $fixture4 = @(
+            'function OkTopLevel { return 1 }'
+            'if ($true) {'
+            '    function NestedInIf { return 2 }'
+            '}'
+            'foreach ($x in 1..2) {'
+            '    function NestedInLoop { return 3 }'
+            '}'
+            'function Outer {'
+            '    function NestedInFunction { return 4 }'
+            '}'
+        )
+        Set-Content -LiteralPath $probe4 -Encoding ascii -Value $fixture4
+        $hits4 = @(Find-NestedFunction $probe4)
+        Assert-Equal $hits4.Count 3 ("规则 7 应当抓到 3 处（if/foreach/函数内），实际 {0}（{1}）" -f $hits4.Count, (($hits4 | ForEach-Object { $_.Func }) -join ','))
+    } finally { Remove-Item -LiteralPath $probe4 -Force -ErrorAction SilentlyContinue }
 }
 Test-Case '硬性约定 3：没有按 .NET 异常类型 catch 的地方' {
     $bad = @()
@@ -293,6 +345,14 @@ Test-Case '空的 catch 必须写明为什么可以吞（空 catch 会把"做不
     $bad = @()
     foreach ($f in Get-LintTargets) {
         $bad += @(Find-SilentCatch $f.FullName | ForEach-Object { "{0}:{1}  {2}" -f $f.Name, $_.Line, ($_.Text -replace '^(.{0,44}).*', '$1') })
+    }
+    Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
+}
+
+Test-Case '函数定义必须在顶层（实测：插进 if 分支里会静默失效，且 extract 型测试抓不到）' {
+    $bad = @()
+    foreach ($f in Get-LintTargets) {
+        $bad += @(Find-NestedFunction $f.FullName | ForEach-Object { "{0}:{1}  函数 {2} 嵌在分支/函数里" -f $f.Name, $_.Line, $_.Func })
     }
     Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
 }

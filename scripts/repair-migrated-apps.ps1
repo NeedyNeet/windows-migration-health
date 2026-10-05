@@ -470,20 +470,31 @@ foreach ($m in $missing) {
 # ---------------------------------------------------------------- verification
 Write-Output ''
 Write-Output '--- verification ---'
-$check = @(
-    'D:\Apps\Installed\Xmind\Xmind.exe',
-    'D:\Apps\Installed\Notion\Notion.exe',
-    'D:\Apps\Installed\quark-cloud-drive\QuarkCloudDrive.exe',
-    'D:\Apps\Installed\NetEase\CloudMusic\cloudmusic.exe',
-    'D:\Apps\Portable\BCompare-zh-5.0.1.29877\Beyond Compare 5\BCompare.exe',
-    'D:\Apps\JetBrains\CLion\bin\clion64.exe',
-    'D:\Apps\JetBrains\PyCharm\bin\pycharm64.exe',
-    'D:\Apps\JetBrains\DataGrip\bin\datagrip64.exe',
-    'D:\Apps\JetBrains\IntelliJ IDEA 2024.2.2\bin\idea64.exe',
-    'D:\Apps\Portable\mpv-lazy\mpv.exe'
-)
-foreach ($c in $check) {
-    Write-Output ("  {0,-6} {1}" -f $(if (Test-Exists $c) { 'OK' } else { 'ABSENT' }), $c)
+# ① 映射表本次到底被用到没有 —— 明说，免得"什么都没打印"被当成"全都对"。
+$usedOld = @($script:pendingEdits | ForEach-Object { $_.Old } | Where-Object { $_ } | Sort-Object -Unique)
+Write-Output ("映射表 {0} 条，本次匹配到 {1} 条{2}" -f $pathMap.Count, $usedOld.Count, $(if ($usedOld.Count -eq 0) { '（本机已无需改指的登记）' } else { '' }))
+# ② 本机验收清单（可选）。原来这里**写死**了 10 条本机绝对路径：换台机器就是 10 条假 ABSENT，
+#    而且会随程序搬家而腐烂 —— 本机有一条停在迁移前的 BCompare 路径，每次跑都打一条假警报。
+#    硬性约定 8：机器专属值不进脚本。没配置时明确说"未配置"，**不**打印一片 OK 假装检查过。
+$verifyPaths = @()
+if ($script:Cfg -and $script:Cfg.VerifyPaths) { $verifyPaths = @($script:Cfg.VerifyPaths) }
+if ($verifyPaths.Count -eq 0) {
+    Write-Output ''
+    Write-Output '本机验收清单：未配置。'
+    Write-Output '  （要逐条核对"我修过的程序还在不在"，把绝对路径填进'
+    Write-Output '   local\repair-migrated-apps.local.psd1 的 VerifyPaths；模板见 config\repair-migrated-apps.local.example.psd1）'
+} else {
+    Write-Output ''
+    Write-Output ("本机验收清单（{0} 条，来自 local 配置）：" -f $verifyPaths.Count)
+    $absent = 0
+    foreach ($c in $verifyPaths) {
+        $ok = Test-Exists $c
+        if (-not $ok) { $absent++ }
+        Write-Output ("  {0,-6} {1}" -f $(if ($ok) { 'OK' } else { 'ABSENT' }), $c)
+    }
+    if ($absent -gt 0) {
+        Write-Output ("  → {0}/{1} 条不存在：若它们确实已卸载或又搬走了，请更新这份清单；否则先查为什么。" -f $absent, $verifyPaths.Count)
+    }
 }
 
 if ($Apply) {

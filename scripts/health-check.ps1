@@ -700,6 +700,123 @@ if ($orphanCount -eq 0) { W '| ✓ | 无孤儿缓存 | — |' }
 else { W ''; W ("**可释放合计约 {0:N1} MB**" -f ($orphanBytes/1MB)) }
 
 # ============================================================================
+# 把"引用旧路径的注册表键"归类：报告要按类聚合，并给出这一类到底该不该动。
+# 刻意写成**纯函数**（不读脚本级状态），这样 tests\health-check.needles.tests.ps1 能把函数体
+# 单独抽出来断言 —— 分类口径是"474 条里哪些能动手"的唯一依据，它错了整节就白读。
+function Get-OldPathKind([string]$regKey) {
+    $k = [string]$regKey
+    if ($k -match '\\Installer\\') {
+        return [pscustomobject]@{ Kind = 'MSI 安装数据库'; Severity = '提示'; Advice = '本工具不改（不在 12 类处理范围内），仅作盘点' }
+    }
+    if ($k -match '\\(?:WOW6432Node\\)?Classes\\(?:WOW6432Node\\)?(?:http|https|ftp|mailto|tel|callto|ms-[\w\-\.]+)(?:\\|$)') {
+        return [pscustomobject]@{ Kind = '协议处理'; Severity = '提示'; Advice = '§5：系统自带协议，不要动' }
+    }
+    if ($k -match 'AppUserModelId') {
+        return [pscustomobject]@{ Kind = '启动器自维护'; Severity = '提示'; Advice = '§5：交给对应启动器（删了会被重建）' }
+    }
+    if ($k -match '\\Lxss\\') {
+        return [pscustomobject]@{ Kind = 'WSL 发行版登记'; Severity = '提示'; Advice = '谨慎：改错会影响 WSL 启动' }
+    }
+    if ($k -match '\\SyncRootManager\\') {
+        return [pscustomobject]@{ Kind = '同步根（OneDrive/百度等）'; Severity = '提示'; Advice = '谨慎：由同步客户端自己维护' }
+    }
+    if ($k -match '\\(?:Shell Folders|User Shell Folders)$') {
+        return [pscustomobject]@{ Kind = '外壳文件夹'; Severity = '提示'; Advice = '谨慎：外壳在用，改错会找不到桌面/文档' }
+    }
+    if ($k -match '\\Uninstall\\') {
+        return [pscustomobject]@{ Kind = '卸载记录（第 1 类）'; Severity = '警告'; Advice = '按"旧→新"改指；新位置不存在则删该记录' }
+    }
+    if ($k -match '\\(?:CurrentVersion|Policies)\\(?:Run|RunOnce)$') {
+        return [pscustomobject]@{ Kind = '启动项（第 11 类）'; Severity = '警告'; Advice = '改指或删除；影响自启' }
+    }
+    if ($k -match '\\(?:WOW6432Node\\)?Classes\\(?:WOW6432Node\\)?CLSID\\') {
+        return [pscustomobject]@{ Kind = 'CLSID 外壳扩展（第 6 类）'; Severity = '警告'; Advice = '改 DLL 路径；确认无用则删该 CLSID' }
+    }
+    if ($k -match '\\(?:WOW6432Node\\)?Classes\\(?:WOW6432Node\\)?TypeLib\\') {
+        return [pscustomobject]@{ Kind = 'TypeLib 类型库'; Severity = '警告'; Advice = '改 DLL / HELPDIR 路径' }
+    }
+    return [pscustomobject]@{ Kind = '其他登记'; Severity = '警告'; Advice = '按"旧→新"改指或删除' }
+}
+# 用 .NET 自己遍历注册表找旧路径引用。为什么不用 `reg query /f <清单> /s`：
+#   · 逐条清单各跑一遍：实测那次调用约 98% 的时间花在**读取每一个值的数据**上，而这一步与
+#     清单内容无关 —— 11 条清单等于把最贵的活重复 11 遍（本机实测 52~55 分钟）。
+#   · 改成"整棵树只 dump 一遍"也不行：`reg.exe` 无法把"读"和"打印"分开，一棵大蜂巢要 5~10 分钟
+#     （实测 344 秒/棵，而一次 /f 调用只要 217 秒），加总等于白干。
+#   自己遍历就没这个问题，而且能只读**字符串类型**的值（路径只可能出现在字符串里），
+#   不打印任何中间结果。本机实测：5 个根键共 51 万键 / 73 万值，合计 **59.5 秒**。
+#   命中判据与旧实现保持一致：**键路径**含清单、**值名**是清单、或**值数据**含清单。
+function Find-OldPathHits {
+    param([string[]]$Roots, [string[]]$Needles)
+    $hits = @{}
+    $ri = 0
+    foreach ($rootPath in $Roots) {
+        $ri++
+        # 脚本里的根键写成 HKCU\ / HKLM\ 短形式；这里归一化成 HKEY_ 全名 ——
+        # 输出的键路径也必须是全名，才能与历史报告 / findings.csv 的 Location 逐条对得上。
+        $fullPath = $rootPath -replace '^HKLM\\', 'HKEY_LOCAL_MACHINE\' -replace '^HKCU\\', 'HKEY_CURRENT_USER\'
+        $rootPath = $fullPath
+        $hive = [Microsoft.Win32.RegistryHive]::CurrentUser
+        $sub = $rootPath
+        if ($rootPath -like 'HKEY_LOCAL_MACHINE\*') { $hive = [Microsoft.Win32.RegistryHive]::LocalMachine; $sub = $rootPath.Substring(19) }
+        elseif ($rootPath -like 'HKEY_CURRENT_USER\*') { $sub = $rootPath.Substring(18) }
+        Write-Host ("  [{0}/{1}] 扫描 {2} ..." -f $ri, $Roots.Count, $rootPath) -ForegroundColor DarkGray
+        # 显式指定 64 位视图：结果与"脚本跑在 32 位还是 64 位 PowerShell 下"无关
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, [Microsoft.Win32.RegistryView]::Registry64)
+        try { $k0 = $base.OpenSubKey($sub) } catch { $k0 = $null }
+        if (-not $k0) {
+            if (-not $script:scanDenied) { $script:scanDenied = New-Object System.Collections.Generic.List[string] }
+            $script:scanDenied.Add($rootPath)
+            Write-Host ("    打不开，跳过：{0}" -f $rootPath) -ForegroundColor Yellow
+            continue
+        }
+        $stack = New-Object System.Collections.Stack
+        $stack.Push(@($k0, $rootPath))
+        while ($stack.Count -gt 0) {
+            $item = $stack.Pop(); $k = $item[0]; $kp = $item[1]
+            foreach ($n in $Needles) {
+                if ($kp.IndexOf($n, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                    if (-not $hits.ContainsKey($kp) -or ([string]$hits[$kp]).Length -lt $n.Length) { $hits[$kp] = $n }
+                    break
+                }
+            }
+            foreach ($vn in $k.GetValueNames()) {
+                foreach ($n in $Needles) {
+                    if ($vn -and $vn.IndexOf($n, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        if (-not $hits.ContainsKey($kp) -or ([string]$hits[$kp]).Length -lt $n.Length) { $hits[$kp] = $n }
+                        break
+                    }
+                }
+                $kind = $k.GetValueKind($vn)
+                if ($kind -ne [Microsoft.Win32.RegistryValueKind]::String -and
+                    $kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString -and
+                    $kind -ne [Microsoft.Win32.RegistryValueKind]::MultiString) { continue }
+                $raw = $k.GetValue($vn, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                $v = if ($raw -is [array]) { ($raw -join "`n") } else { [string]$raw }
+                if (-not $v) { continue }
+                foreach ($n in $Needles) {
+                    if ($v.IndexOf($n, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        if (-not $hits.ContainsKey($kp) -or ([string]$hits[$kp]).Length -lt $n.Length) { $hits[$kp] = $n }
+                        break
+                    }
+                }
+            }
+            foreach ($sn in $k.GetSubKeyNames()) {
+                $c = $null
+                try { $c = $k.OpenSubKey($sn) }
+                catch {
+                    # "读不到" ≠ "不存在"：记下来交给 §12 如实报告，绝不静默跳过整棵子树
+                    if (-not $script:scanDenied) { $script:scanDenied = New-Object System.Collections.Generic.List[string] }
+                    $script:scanDenied.Add($kp + '\' + $sn)
+                    continue
+                }
+                if ($c) { $stack.Push(@($c, ($kp + '\' + $sn))) }
+            }
+            $k.Close()
+        }
+    }
+    return $hits
+}
+
 Section '12. 旧路径残留扫描'
 # ============================================================================
 if ($SkipOldPathScan) {
@@ -744,36 +861,58 @@ if ($SkipOldPathScan) {
             'HKCU\Software\Classes','HKLM\Software\Classes','HKLM\Software\WOW6432Node\Classes',
             'HKCU\Software\Microsoft\Windows\CurrentVersion','HKLM\Software\Microsoft\Windows\CurrentVersion'
         )
-        W ("清单 {0} 条 × 根键 {1} 个；该步较慢（约 3~6 分钟），请耐心等待。" -f $list.Count, $searchRoots.Count)
+W ("清单 {0} 条 × 根键 {1} 个，只遍历一遍：只读字符串类型的值、不打印中间结果。" -f $list.Count, $searchRoots.Count)
         W ''
         W '本次搜索的路径：'
         foreach ($n in $list) { W ("- {0}" -f $n) }
         W ''
-        $hits = @{}
-        $i = 0
-        foreach ($n in $list) {
-            $i++
-            Write-Host ("  [{0}/{1}] 搜索 {2} ..." -f $i, $list.Count, $n) -ForegroundColor DarkGray
-            foreach ($root in $searchRoots) {
-                $cur = ''
-                foreach ($line in (& reg.exe query $root /f $n /s 2>$null)) {
-                    if ($line -match '^(HKEY_[A-Z_]+)\\(.+)$') {
-                        $cur = $matches[1] + '\' + $matches[2]
-                        if ($line -match [regex]::Escape($n)) { $hits[$cur] = $n }
-                    } elseif ($line -match [regex]::Escape($n) -and $cur) { $hits[$cur] = $n }
-                }
-            }
+        if ($script:scanDenied -and $script:scanDenied.Count -gt 0) {
+            W ("⚠ **有 {0} 个子键读不到**（多半是权限），其下的引用**未被检查** —— 这不是「没有残留」。" -f $script:scanDenied.Count)
+            W ''
+            foreach ($d in ($script:scanDenied | Select-Object -First 5)) { W ("- 读不到：{0}" -f ($d -replace '^HKEY_LOCAL_MACHINE','HKLM' -replace '^HKEY_CURRENT_USER','HKCU')) }
+            if ($script:scanDenied.Count -gt 5) { W ("- …另有 {0} 个" -f ($script:scanDenied.Count - 5)) }
+            W ''
+            AddFinding '警告' '体检范围' '权限受限的子键' ([string]$script:scanDenied.Count) '未执行有效检查' '这些子树没被读到，别把本节结论当成"干净"'
         }
+        $hits = Find-OldPathHits -Roots $searchRoots -Needles $list
         W ("命中 {0} 个键：" -f $hits.Count)
         W ''
         if ($hits.Count -eq 0) {
             W '✓ 注册表中已无这些旧路径的引用（回归检查通过）'
+
         } else {
-            W '| 旧路径 | 仍引用的键 |'
-            W '|---|---|'
-            foreach ($k in ($hits.Keys | Sort-Object)) {
-                W ("| {0} | {1} |" -f $hits[$k], ($k -replace '^HKEY_LOCAL_MACHINE','HKLM' -replace '^HKEY_CURRENT_USER','HKCU'))
-                AddFinding '警告' '旧路径残留' $k $hits[$k] '注册表仍引用这个旧路径' '按"旧→新"映射改写；新位置不存在则删除该记录'
+            # 按"引用所在的位置类别"聚合。原来这里是**逐条**打印（本机实测 474 行，占整份报告的 58%），
+            # 而报告的第 14.1 节早就把同一批数据按目标聚合过了 —— 枚举版既重复又把信号淹掉。
+            # 分类不只是好看：474 条里 339 条在 MSI 自己的安装数据库里（本工具不改），协议处理属于
+            # §5「三类别乱动」。这两件事只有分类之后才看得出来。
+            $classified = foreach ($k in $hits.Keys) {
+                $kind = Get-OldPathKind $k
+                [pscustomobject]@{ Key = $k; Needle = $hits[$k]; Kind = $kind.Kind; Severity = $kind.Severity; Advice = $kind.Advice }
+            }
+            $byKind = @($classified | Group-Object Kind | Sort-Object Count -Descending)
+            W '按"引用所在的位置"归类（这决定要不要动）：'
+            W ''
+            W '| 类别 | 条数 | 级别 | 该怎么处理 |'
+            W '|---|---|---|---|'
+            foreach ($g in $byKind) {
+                W ("| {0} | {1} | {2} | {3} |" -f $g.Name, $g.Count, $g.Group[0].Severity, $g.Group[0].Advice)
+            }
+            W ''
+            W '各类前 3 条（完整逐条见 findings.csv；按目标聚合见 14.1）：'
+            W ''
+            foreach ($g in $byKind) {
+                W ("**{0}**（{1} 条）" -f $g.Name, $g.Count)
+                foreach ($r in ($g.Group | Select-Object -First 3)) {
+                    W ("- `{0}` ← {1}" -f ($r.Key -replace '^HKEY_LOCAL_MACHINE','HKLM' -replace '^HKEY_CURRENT_USER','HKCU'), $r.Needle)
+                }
+                if ($g.Count -gt 3) { W ("- …另有 {0} 条（不再打印，见 findings.csv）" -f ($g.Count - 3)) }
+                W ''
+            }
+            # 明细仍然逐条进 findings.csv，但**严重度按类别走**，不再一律"警告"：
+            # 不可行动的（MSI 数据库 / 协议 / 启动器自维护 / WSL / 同步根）降为"提示"，
+            # 否则汇总行的数字会被盘点型噪音顶起来（本机实测：警告 137 -> 620）。
+            foreach ($r in $classified) {
+                AddFinding $r.Severity '旧路径残留' $r.Key $r.Needle '注册表仍引用这个旧路径' $r.Advice
             }
         }
         # 文本配置扫描只在"清单可用"时有意义：清单为空时它会遍历 0 个关键词并打印

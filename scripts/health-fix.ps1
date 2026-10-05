@@ -278,7 +278,7 @@ foreach ($r in 'HKCU:\Software\Classes','HKLM:\Software\Classes','HKLM:\Software
         $k = $r + '\' + $p
         if (-not (Test-Path -LiteralPath $k)) { continue }
         $exe = Get-ExeFrom ([string](Get-RegValue ($k + '\shell\open\command')))
-        if (Test-Missing $exe) { Del-Key $k ("协议目标不存在：{0}" -f $exe) } else { $script:stat['跳过']++ }
+        if (Test-Missing $exe) { Del-Key $k ("协议目标不存在：{0}" -f $exe) } else { $script:stat['跳过']++; Say ("  [跳过] {0}：协议目标仍存在（{1}）" -f $k, $exe) }
     }
 }
 # B4 App Paths
@@ -288,7 +288,7 @@ foreach ($ap in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths','HKL
     foreach ($n in $names) {
         $k = $ap + '\' + $n
         $exe = Get-ExeFrom ([string](Get-RegValue $k ''))
-        if (Test-Missing $exe) { Del-Key $k ("目标不存在：{0}" -f $exe) } else { $script:stat['跳过']++ }
+        if (Test-Missing $exe) { Del-Key $k ("目标不存在：{0}" -f $exe) } else { $script:stat['跳过']++; Say ("  [跳过] {0}：目标仍存在（{1}）" -f $k, $exe) }
     }
 }
 # B5 死服务（服务键受保护，必须用 Get-ItemProperty 读）
@@ -298,7 +298,7 @@ foreach ($s in 'Clash Core Service','FlashCenterSvc','SysCleanProService','XtuSe
     $img = [string](Get-ItemProperty -LiteralPath $k -ErrorAction SilentlyContinue).ImagePath
     if (-not $img) { $script:stat['跳过']++; Say ("  [跳过] {0}：读不到 ImagePath" -f $s); continue }
     $exe = Get-ExeFrom $img
-    if (Test-Missing $exe) { Del-Key $k ("服务程序不存在：{0}" -f $exe) } else { $script:stat['跳过']++ }
+    if (Test-Missing $exe) { Del-Key $k ("服务程序不存在：{0}" -f $exe) } else { $script:stat['跳过']++; Say ("  [跳过] {0}：服务程序仍存在（{1}）" -f $k, $exe) }
 }
 # B6 失效卸载记录
 $unRoots = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
@@ -322,13 +322,13 @@ foreach ($un in $unRoots) {
         }
         # 明确已卸载的软件留下的记录（程序本体已不存在）→ 删除记录。
         # 注意：Steam / ACE(游戏反作弊) 这类由各自启动器自我维护，**不动**（删了会被重建，且可能影响游戏）
-        if ($n -match '^Steam App' -or $dn -match 'AntiCheat|Steam') { $script:stat['跳过']++; continue }
+        if ($n -match '^Steam App' -or $dn -match 'AntiCheat|Steam') { $script:stat['跳过']++; Say ("  [跳过] {0}：Steam / 反作弊由启动器自我维护，不动" -f $k); continue }
         if ($dn -match 'Photoshop|Adobe') {
             # Adobe 的记录要用两个条件同时成立才算"死"：安装目录没了 且 卸载器也没了
             $instLoc = [string](Get-RegValue $k 'InstallLocation')
             $unExe   = Get-ExeFrom ([string](Get-RegValue $k 'UninstallString'))
             if ((Test-Missing $instLoc) -and (Test-Missing $unExe)) { Del-Key $k ("Adobe 组件已卸载：{0}" -f $dn) }
-            else { $script:stat['跳过']++ }
+            else { $script:stat['跳过']++; Say ("  [跳过] {0}：Adobe 组件半残留，保守保留" -f $k) }
             continue
         }
         if ($dn -match 'Java\(TM\) SE|Java SE Development Kit|Free Download Manager') {

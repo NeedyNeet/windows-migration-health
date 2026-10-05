@@ -87,4 +87,56 @@ if (-not $env:SLOW_TESTS) {
     }
 }
 
+Test-Case '旧路径命中的分类口径（决定"要不要动"）' {
+    # 分类函数是"474 条里哪些能动手"的唯一依据，所以它自己必须被测。
+    Invoke-Expression (Get-ScriptFunctionText -Path (Join-Path $repo 'scripts\health-check.ps1') -Name 'Get-OldPathKind')
+    Assert-Equal (Get-OldPathKind 'HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Components\AB').Kind 'MSI 安装数据库' 'MSI 数据库没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_CURRENT_USER\Software\Classes\http\DefaultIcon').Kind '协议处理' '协议处理没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_CURRENT_USER\Software\Classes\AppUserModelId\A\B').Kind '启动器自维护' 'AppUserModelId 没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss\{x}').Kind 'WSL 发行版登记' 'Lxss 没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall\{x}').Kind '卸载记录（第 1 类）' '卸载记录没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_LOCAL_MACHINE\Software\Classes\CLSID\{x}\InprocServer32').Kind 'CLSID 外壳扩展（第 6 类）' 'CLSID 没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_LOCAL_MACHINE\Software\Classes\WOW6432Node\TypeLib\{x}\1.0\HELPDIR').Kind 'TypeLib 类型库' 'TypeLib 没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run').Kind '启动项（第 11 类）' '启动项没被识别'
+    # 级别：不可行动的降到"提示"，可行动的保持"警告" —— 否则汇总行会被盘点型噪音顶起来
+    Assert-Equal (Get-OldPathKind 'HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer\Folders').Severity '提示' 'MSI 数据库不该是"警告"'
+    Assert-Equal (Get-OldPathKind 'HKEY_LOCAL_MACHINE\Software\Classes\WOW6432Node\CLSID\{x}\InprocServer32').Kind 'CLSID 外壳扩展（第 6 类）' 'Classes 下的 WOW6432Node CLSID 没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_LOCAL_MACHINE\Software\WOW6432Node\Classes\CLSID\{x}\InprocServer32').Kind 'CLSID 外壳扩展（第 6 类）' 'WOW6432Node\Classes 下的 CLSID 没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_LOCAL_MACHINE\Software\WOW6432Node\Classes\TypeLib\{x}\1.0\HELPDIR').Kind 'TypeLib 类型库' 'WOW6432Node\Classes 下的 TypeLib 没被识别'
+    Assert-Equal (Get-OldPathKind 'HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall\{x}').Severity '警告' '卸载记录应当是"警告"'
+}
+
+Test-Case 'Find-OldPathHits：只读字符串类型、递归、值名、以及跨层拼出的路径' {
+    Invoke-Expression (Get-ScriptFunctionText -Path (Join-Path $repo 'scripts\health-check.ps1') -Name 'Find-OldPathHits')
+    $leaf   = '_wmh_selftest_scan_' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $psRoot = 'HKCU:\Software\' + $leaf
+    $needle = 'C:\Users\_wmh_probe_\OldApp'
+    try {
+        New-Item -Path $psRoot -Force | Out-Null
+        Set-ItemProperty -LiteralPath $psRoot -Name 'S' -Value ('pre ' + $needle + ' post')
+        New-Item -Path "$psRoot\Sub" -Force | Out-Null
+        Set-ItemProperty -LiteralPath "$psRoot\Sub" -Name 'S2' -Value $needle
+        New-Item -Path "$psRoot\SubName" -Force | Out-Null
+        New-ItemProperty -LiteralPath "$psRoot\SubName" -Name $needle -PropertyType String -Value '' -Force | Out-Null
+        New-Item -Path "$psRoot\BinOnly" -Force | Out-Null
+        Set-ItemProperty -LiteralPath "$psRoot\BinOnly" -Name 'B' -Value ([Text.Encoding]::Unicode.GetBytes($needle)) -Type Binary
+        # 跨层：键名 "W~D:" 之后逐层拼出路径（开始菜单的 TileProperties 就是这么存的）——
+        # reg.exe /f 逐键比对，结构上看不到这种，所以这是新实现多出来的能力，必须钉住。
+        $k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(('Software\' + $leaf + '\W~D:'))
+        $null = $k.CreateSubKey('JetBrains\PyCharm')   # 必须再深一层：清单 D:\JetBrains\ 带尾反斜杠，路径停在 JetBrains 就匹配不上
+        $k.Close()
+
+        $hits = Find-OldPathHits -Roots @('HKCU\Software\' + $leaf) -Needles @($needle, 'D:\JetBrains\')
+        $keys = @($hits.Keys | Sort-Object)
+        Assert-Equal $keys.Count 4 ("应当命中 4 个键（根值 / Sub / 值名 / 跨层），实际 {0}：{1}" -f $keys.Count, ($keys -join ' | '))
+        Assert-True (@($keys | Where-Object { $_ -match 'BinOnly' }).Count -eq 0) '二进制值里的路径不该算命中（只读字符串类型）'
+        Assert-True (@($keys | Where-Object { $_ -match 'SubName$' }).Count -eq 1) '值名本身是路径的情况应当命中（Installer\Folders 那种）'
+        Assert-True (@($keys | Where-Object { $_ -match 'W~D:' }).Count -eq 1) '跨层拼出的路径应当命中（reg.exe 看不到）'
+        $rootKey = 'HKEY_CURRENT_USER\Software\' + $leaf
+        Assert-Equal ([string]$hits[$rootKey]) $needle '键路径必须是 HKEY_ 全名形式（才能与历史 findings.csv 的 Location 对得上）'
+    } finally {
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree(('Software\' + $leaf), $false)
+    }
+}
+
 Complete-TestRun 'health-check.needles'
