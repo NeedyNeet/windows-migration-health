@@ -13,6 +13,12 @@
 | `health-fix.local.psd1`、`repair-migrated-apps.local.psd1` | **本机真值配置**：旧用户目录名、路径改指表、迁移映射表（模板见 `config\*.local.example.psd1`） | 手工维护；两个脚本启动时读取 |
 | `reports/` | 体检报告：`report.md`（人读）、`findings.csv`（逐条明细）、`snapshot.json`（磁盘增长基线）、`history/` | `health-check.ps1 -OutDir local\reports` |
 | `health-fix-log.txt` | 清理脚本的详细日志（含每一条改动与统计） | `health-fix.ps1` |
+| `remove-residue.ps1` + `delete-targets.psd1` | **本机自建工具**：按清单删"确认已卸载"的登记。默认试运行；每条改动前 `reg export`；备份失败即跳过；`-Apply` 时生成 `rollback-all.cmd`。清单每条写明动作（删整键/删子键/删值）、路径、是否走 32 位视图 | 手工运行（清单由体检报告 + 处置复核生成） |
+| `fix-ie-clsid.ps1` + `fix-ie-clsid.cmd` | **本机一次性收尾**：删掉 `{0002DF01-…}`（IE 的 CLSID）被 360 劫持的 `LocalServer32`。该键 DACL 只给 Administrators `ReadKey`，故脚本走"夺取所有权 → 授权 → 再删"并留档原 SDDL；默认试运行，`-Apply` 才写（`.cmd` 自提权） | 手工运行 |
+
+> **为什么这两个工具在 `local\` 而不在 `scripts\`**：它们只对本机有意义 —— 一个依赖本机的删除清单，另一个硬编码了本机那个被劫持的 IE CLSID。`scripts\` 只放"面向所有人、零第三方依赖"的三个脚本。
+>
+> 副作用要知道：`tests\syntax.tests.ps1` 与 `tests\lint.tests.ps1` **只扫 `scripts\` 与 `tests\`**，所以这两个文件不受它们约束；而 `tests\encoding.tests.ps1` 是全仓库递归的，BOM / 纯 ASCII / CRLF 仍然管着它们。
 
 > **历史**：早期版本的 `health-fix.cmd` 会把控制台输出重定向到 `health-fix-elevated.txt`。
 > cmd 的重定向走的是 OEM 代码页（中文系统上是 936），那个文件因此是 **GBK 乱码**。

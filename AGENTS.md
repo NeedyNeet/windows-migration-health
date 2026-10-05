@@ -201,6 +201,10 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
   凡会改动系统状态的函数，必须有**真跑它**的测试。`Backup-Key` 的 `reg export` 与 `Set-Text` 的写入
   曾经从未被执行过 —— 而它们正是唯一动注册表的部分；补上之后第一次运行就抓出一个安全 bug。
 15. **空的 `catch` 必须写明为什么可以吞**：空 `catch` 是"静默失败"的温床 —— 它把"做不到"变成"看起来做到了"。理由必须写在子句内或该行行尾（`catch { }  # 读不到就当没有`）。`tests\lint.tests.ps1` 的规则 6 会拦。  `[lint-6]`
+16. **类登记必须按文档里的完整路径枚举，不能只看上一层**：第 6 类（右键菜单 / 缩略图 / 预览 / shell 扩展）登记在 `Classes\CLSID\{…}\InprocServer32|LocalServer32`，**不是** `Classes` 这一层里"以 `{` 开头"的子键 —— 后者在正常机器上几乎为空（本机实测：`HKLM\Software\Classes` 5222 个子键里只有 1 个是 GUID 名、且它没有服务器子键；`HKCU\Software\Classes` 1486 个子键里 0 个）。旧实现只看这一层，于是第 7 节打出 `✓ 共 0 个 CLSID / 目标均存在`：**检查了 0 项却通过**，与"清单为空却报回归检查通过"是同一类假绿。规矩：枚举某类登记照 `docs\registry-reference.md` 的路径写；**枚举到 0 项时必须明说"本节未执行有效检查"并计入 `findings.csv`**，不许打勾。  `[test] tests\health-check.clsid.tests.ps1`
+17. **提权 ≠ 有写权限；受保护键走"夺取所有权"**：`HKLM\Software\Classes\CLSID` 下不少键的 DACL 只给 `BUILTIN\Administrators` 一个 `ReadKey`（`NT SERVICE\TrustedInstaller` / `SYSTEM` 才是 `FullControl`），所以**以管理员身份 `reg delete` 照样 AccessDenied** —— 这不是故障。正确顺序：**备份 → 先试直接改 → 夺取所有权 → 重建权限项（Administrators: FullControl）→ 再改 → 回读校验**；**不要**用 `icacls /reset` 硬刷整棵树。两条配套的坑：
+    - **P/Invoke `TOKEN_PRIVILEGES` 必须 `[StructLayout(LayoutKind.Sequential, Pack = 1)]`**：`long Luid` 默认 8 字节对齐会让结构体从 16 字节变成 24 字节，`AdjustTokenPrivileges` **静默失败**、`GetLastWin32Error()` 返回 **1300**（看起来像"没权限"，实测为此白跑一整轮）。自检办法：拿 `SeChangeNotifyPrivilege`（所有令牌都持有）做对照 —— `Pack=1` 下必须 `ok=True / err=0`。
+    - **`.NET` 的 `GetAccessControl(...).Owner` 在个别系统键上返回空**：别拿它当"所有权是否生效"的判据（实测把一次**已经成功**的所有权变更判成 FAILED）。改用原始 `GetSecurityInfo` + `ConvertSidToStringSid`，或干脆用"能否改 DACL"当判据。  `[manual]` 需要"某个键的 DACL 恰好只给 Administrators 读"这种环境，CI 里构造不出来
 
     - **改完文件必须回读校验** `[manual]`：脚本化编辑要"一次读 → 全部改 → 一次写"，然后**重新从磁盘读回来断言改动真的在**。实测事故：一个命令里先改了内存里的数组、又从磁盘重读文件去改第二处、最后只写回第二次的改动 —— 第一处**静默丢失**，而它打印的却是"✓ 已替换（15 行 -> 28 行）"；那次丢失让一个优化看起来"失败"了一整轮。这与本项目对注册表写入的要求是同一条：**写入 + 回读校验**，别信"我写过了"。
 ### 提交信息约定

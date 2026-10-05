@@ -95,6 +95,10 @@ reg query "HKLM\Software\Microsoft\Windows\CurrentVersion" /f "D:\mpv-lazy" /s
 | `scripts/health-fix.ps1`（按规则清理） | A 段改路径（程序搬走）→ B 段删已卸载软件的记录/服务/协议 → C 段清"指向已删 ProgID"的引用与图标覆盖 → D 段清悬空引用。判据统一是 `Test-Missing`（目标确实不存在才动手）；每条改动前 `reg export` 到 `local/rollback/<运行时间戳>/`，**备份失败则该条改动被跳过** |
 | `scripts/repair-migrated-apps.ps1`（迁移批量改写） | 按 `local\repair-migrated-apps.local.psd1` 的"旧→新"映射改写上表 1/2/4/8/9/12 类，并用 `reg query` 发现更多引用点；写入前检查目标文件是否真的存在（`Test-Exists`） |
 
+> **第 6 类的代码位置**：`scripts\health-check.ps1` 第 7 节，枚举由 `Get-ClsidExtensionKeys` 完成 —— 它扫的是 `Classes\CLSID` **子树**。注意 `Classes` 这一层里"以 `{` 命名"的键**不是**第 6 类的登记位置（正常机器上几乎不存在这种键）；只看这一层会把"检查了 0 项"打成绿勾（见 `AGENTS.md` 硬性约定 16）。
+>
+> 删这类键时若遇到 `AccessDenied`（DACL 只给 `Administrators` 一个 `ReadKey`，`TrustedInstaller`/`SYSTEM` 才是 `FullControl`），按 **夺取所有权 → 重建权限项 → 恢复完全控制 → 再修改** 的顺序做 —— **提权不等于有写权限**（见硬性约定 17）。
+
 **执行顺序**：`health-check` → `repair-migrated-apps` → 再 `health-check` 复检 → 最后 `health-fix`。
 顺序反了会白干：`health-fix` 会把"目标暂时找不到"的记录直接删掉，而那条记录本来正是
 `repair-migrated-apps` 要改写回来的。
