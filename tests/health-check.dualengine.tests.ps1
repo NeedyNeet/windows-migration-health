@@ -74,11 +74,27 @@ if (-not $env:SLOW_TESTS) {
                 Set-Content -LiteralPath (Join-Path $tmp 'scripts\health-check.needles.txt') -Encoding UTF8
 
             $rows = @{}
+            $childInfo = [ordered]@{}
             foreach ($eng in 'pwsh', 'powershell') {
                 $outDir = Join-Path $tmp ('reports-' + $eng)
+                # 子进程的输出**留档**，不再 `| Out-Null` 丢掉。两个理由：
+                #  1) 它是定位慢/怪问题的唯一线索 —— CI 上出现过"5.1 宿主这一趟比 pwsh 宿主慢 5.5 倍"
+                #     （21.7 分钟 vs 3.9 分钟，同为这一个套件），而 Out-Null 让子进程自己的分段计时消失，
+                #     只能靠猜；留档后下一次 CI 就能看出慢在哪个子进程、慢在哪一段。
+                #  2) 失败时可以把子进程输出的尾部直接打出来，不必再复现一遍。
+                $conLog = Join-Path $tmp ("console-$eng.txt")
+                $swChild = [Diagnostics.Stopwatch]::StartNew()
                 # 只读体检；退出码可能是 1（有严重项），与本测试无关，故不检查
                 & $eng -NoProfile -ExecutionPolicy Bypass -File (Join-Path $tmp 'scripts\health-check.ps1') `
-                    -OutDir $outDir -SkipAssocScan -SkipClsidScan -NoHistory 2>&1 | Out-Null
+                    -OutDir $outDir -SkipAssocScan -SkipClsidScan -NoHistory *> $conLog
+                $swChild.Stop()
+                $sizeKb = 0
+                if (Test-Path -LiteralPath $conLog) { $sizeKb = [math]::Round((Get-Item -LiteralPath $conLog).Length / 1KB, 1) }
+                $childInfo[$eng] = [pscustomobject]@{
+                    Seconds = [math]::Round($swChild.Elapsed.TotalSeconds, 1)
+                    Kb      = $sizeKb
+                    Log     = $conLog
+                }
                 $runDir = @(Get-ChildItem -LiteralPath $outDir -Directory -ErrorAction SilentlyContinue |
                             Where-Object { $_.Name -match '^\d{8}-\d{4}$' } | Sort-Object Name -Descending)[0]
                 if (-not $runDir) { throw ("{0} 没有产出报告目录（自检通过了却跑不起来，属于真失败）" -f $eng) }
@@ -86,6 +102,11 @@ if (-not $env:SLOW_TESTS) {
                 if (-not (Test-Path -LiteralPath $csv)) { throw ("{0} 没有 findings.csv" -f $eng) }
                 $rows[$eng] = @(Import-Csv -LiteralPath $csv -Encoding UTF8)
             }
+            # 子进程各自的耗时与输出体积：CI 上判断"慢在哪"就靠这一行（本机实测两边都在 1~2 分钟量级）
+            Write-Output ("    子进程耗时：pwsh {0} 秒（控制台 {1} KB）/ 5.1 {2} 秒（{3} KB）；宿主是 {4}" -f `
+                $childInfo['pwsh'].Seconds, $childInfo['pwsh'].Kb,
+                $childInfo['powershell'].Seconds, $childInfo['powershell'].Kb,
+                $(if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh' } else { '5.1' }))
 
             Test-Case '双引擎：两次体检都真的产出了发现项（0 行对 0 行不算零差异）' {
                 foreach ($eng in 'pwsh', 'powershell') {
