@@ -31,6 +31,31 @@ v2.2 把迁移映射表搬进 `local\` 之后，新机器上第一件事是"把�
 本机实测：3 个固定盘、5,855 个目录、**0.9 秒**扫完；从 197 个旧前缀里给出 3 条高置信候选
 （`C:\Python314` → `D:\Dev\Python314`、GoogleUpdater 整目录搬到 D:、一个游戏框架目录）。
 
+### 修复：CI 的"双引擎零差异"断言会**假红**（不是工具不一致）
+
+`tests\health-check.dualengine.tests.ps1` 会**先后**跑两次体检（相隔数分钟）再逐行比对 `findings.csv`。
+但它用的清单 `C:\Program Files` 会命中 `HKCU\…\Local Settings\MrtCache\…` 这类
+**Windows 自己在跑动时会写**的资源缓存 —— 只要两次之间系统多写一条，断言就必然假红。
+CI 上实测到过：差 1 行（131,397 vs 131,398），失败信息指向 WindowsTerminal 的一条缓存。
+
+这是**测试的缺陷**，不是工具在 5.1 与 7.x 下结论不一致。现在按"易变**位置**"排除
+（`MrtCache` / `MuiCache` / `BagMRU` / `Bags` / `ComDlg32` / `AppCompatFlags` / `UserAssist` /
+`Search` 等 10 类），并强制两条：**排除条数必须打印**（类别与位置分开报）、
+**过滤后每个引擎都必须还剩行且不少于原始行数的一半** —— 否则"过滤"本身会成为新的假绿来源。
+真正的旧路径残留（含 `Start\TileProperties` 这类跨层路径）一律照常参与对比。
+
+### 维护：CI 不再有 Node 20 弃用告警
+
+`actions/checkout` 从 `v4` 升到 `v7`（v4 面向 Node.js 20，而 runner 已强制 Node.js 24，
+Actions 的 Annotations 里会报弃用告警）。
+
+### 文档：README 精简、长内容搬进 docs
+
+根 README 从 247 行减到 **153 行**（徽章 + 一句话定位 + 三种成因表 + 快速开始 + 效果验收 + 目录结构…），
+细节搬到两篇新文档：**[design-notes.md](docs/design-notes.md)**（每条设计对应哪次真实事故、由哪个测试守着）
+与 **[troubleshooting.md](docs/troubleshooting.md)**（"报告写着未执行有效检查"是什么意思、
+MSIX 版 pwsh 的两处影响）。[docs/README.md](docs/README.md) 索引同步更新。
+
 ## v2.2 —— 2026-10-05
 
 ### ⚠ 破坏性变更：迁移映射表搬出了脚本
