@@ -122,7 +122,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 | [docs/migration-checklist.md](docs/migration-checklist.md) | **大批量迁移避坑清单**：阶段 0~3（该不该迁 → 基线快照 → robocopy → 复检登记与验收）+ 台账模板 |
 | [docs/registry-reference.md](docs/registry-reference.md) | **12 类登记参考**：每类的位置/失效表现/修复动作、统一检查方法、脚本对应关系、三类别乱动 |
 | [docs/case-report-d-apps-migration.md](docs/case-report-d-apps-migration.md) | **完整案例报告**：本次 D 盘应用迁移的逐项排查、修复与验证记录 |
-| [versions/README.md](versions/README.md) | 版本档案：`v1-ps5.1`（旧）/ `v2-ps7.6`（当前）+ 双引擎验收证据 |
+| [versions/README.md](versions/README.md) | 版本档案：`v1-ps5.1`（旧）/ `v2-ps7.6`（第 2 版**冻结档案**；现行版本在 [scripts/](scripts/)）+ 双引擎验收证据 |
 | [config/](config/) | 配置模板：`health-check.needles.example.txt`（旧路径清单，复制到 `scripts\health-check.needles.txt`）、`*.local.example.psd1`（机器专属映射，复制到 `local/` 后填真值） |
 | [tests/](tests/) | **零依赖测试套件**：语法、编码卫生、删除门禁、映射顺序；`tests\run-tests.cmd` 会在 5.1 与 7.x 下各跑一遍 |
 | [.githooks/](.githooks/) | **pre-commit 钩子**：提交前跑编码/行尾检查；用 `scripts\dev\install-hooks.ps1` 启用 |
