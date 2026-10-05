@@ -66,4 +66,28 @@ Test-Case '运行器在启动引擎前会自检"能不能启动并捕获"' {
     Assert-Match $t 'wmh-probe-ok' '看不到"引擎可启动性自检"'
     Assert-Match $t '\[跳过\] 引擎' '自检失败时没有明确的跳过提示（会退回成假红）'
 }
+Test-Case '套件"一项检查都没做"时，框架必须判失败（0 项通过也是假绿）' {
+    # 实测事故（2026-10-05）：新加的双引擎套件在 5.1 宿主下 `& pwsh` 启动失败，
+    # 异常没冒出 try/finally，于是它照样打印 "共 0 项检查，0 项失败，0 项跳过" + `##RESULT: PASS`。
+    # 这里用一个**什么都不做**的合成套件复现，钉住"0 项检查 + 0 项跳过 = 失败"。
+    # 注意：合法的"全跳过"不受影响（跳过会计数），见上一个用例里的 [SKIP] 路径。
+    $engine = if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh' } else { 'powershell' }
+    $root = Join-Path ([IO.Path]::GetTempPath()) ('wmh-empty-' + [guid]::NewGuid().ToString('N'))
+    try {
+        $null = New-Item -ItemType Directory -Path (Join-Path $root 'tests\lib') -Force
+        Copy-Item -LiteralPath (Join-Path $repo 'tests\lib\TestKit.ps1') -Destination (Join-Path $root 'tests\lib\TestKit.ps1')
+        Set-Content -LiteralPath (Join-Path $root 'tests\empty.tests.ps1') -Encoding UTF8 -Value @(
+            '. "$PSScriptRoot\lib\TestKit.ps1"'
+            "Complete-TestRun 'empty'"
+        )
+        $out = (& $engine -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tests\empty.tests.ps1') 2>&1 | Out-String)
+        $code = $LASTEXITCODE
+        Assert-True ($code -ne 0) '0 项检查的套件退出码仍是 0 —— 那正是"崩了却报通过"'
+        Assert-Match    $out '##RESULT: FAIL' '没有输出 ##RESULT: FAIL'
+        Assert-NotMatch $out '##RESULT: PASS' '居然还输出了 ##RESULT: PASS'
+    } finally {
+        if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 Complete-TestRun 'harness.canary'
