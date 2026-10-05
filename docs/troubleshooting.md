@@ -69,6 +69,24 @@ MSIX 版 pwsh 在**父进程不是 PowerShell 7** 时不会把 stdout 交给父�
 - **假红**：`.ps1` 丢了 UTF-8 BOM → 5.1 按 ANSI 解码 → 报出上百个**假**语法错误（pwsh 7 下完全正常，
   所以这个坑只在 5.1 暴露）。改完文件跑一次 `scripts\dev\fix-encoding.ps1 -Apply` 即可。
 
+## 4. 双引擎测试报"仅某一侧多一行" —— 先看是不是系统的缓存
+
+`tests\health-check.dualengine.tests.ps1` 会**先后**跑两次体检（相隔数分钟）再逐行比对。如果差异只有
+一两行，而且位置落在 `HKCU\…\Local Settings\MrtCache`（或 `MuiCache` / `BagMRU` / `ComDlg32` /
+`AppCompatFlags` / `UserAssist` / `Search`）这类**Windows 自己在跑动时会写**的缓存键里，那不是工具
+在 5.1 与 7.x 下结论不一致 —— 是两次快照之间系统多写了一条。
+
+- 套件**已经把这类位置排除**（10 类，排除条数会打印出来），所以正常情况下不会再看到这种假红；
+- 手工比对（`Compare-Object` 两份 `findings.csv`）时**记得自己排除**同样这批位置；
+- 判据上还有两条线：排除后每个引擎都必须**还剩行**、且**不少于原始行数的一半** —— 一旦"排除"把报告
+  吃光，断言会明确失败，而不是"两边都空 → 零差异 → 打勾"。
+
+> 真因排查的口径也记在这里：**别猜，先量**。同一件事（CI 上 `powershell` 那个 job 要 21 分钟）
+> 先后否掉了三个看起来合理的假设 —— `Compare-Object` 慢（实测 0.4 秒）、5.1 宿主启动子进程慢
+> （本机隔离实验 87.5s vs 89.5s，无差异）、子进程本身慢（CI 计时显示只要 61+109 秒）—— 最后落到
+> 套件自己那行"拼行签名"：`'{0}|…' -f …` 每行做格式解析 + `$o += …` 二次方复制，在 13.1 万行下
+> 5.1 要 **676 秒**、换成单次遍历 + `List.Add` + 字符串连接后 **0.5 秒**。
+
 ## 下一步看哪篇
 
 想了解"为什么要有这些设计" → [design-notes.md](design-notes.md)；想核对某一类登记 → [registry-reference.md](registry-reference.md)；想看完整事故过程 → [case-report-d-apps-migration.md](case-report-d-apps-migration.md)。
