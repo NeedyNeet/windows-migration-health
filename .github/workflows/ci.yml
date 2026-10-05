@@ -1,7 +1,10 @@
 name: ci
 
 on:
+  # 只有 main 的推送才直接跑：**PR 分支的推送会同时触发 push 与 pull_request 两个事件**，
+  # 于是同一份工作白跑两遍（实测：每个 run 的 powershell job 都要 20~30 分钟，白跑一遍很贵）。
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
