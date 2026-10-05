@@ -51,7 +51,7 @@ Windows **「程序位置登记」一致性**工具集：核对并修复那些"�
 |---|---|---|
 | [health-check.ps1](scripts/health-check.ps1) | **只读体检**：核对 12 类"程序位置登记"、孤儿安装缓存、旧路径残留、磁盘容量与增长 | 绝不修改任何东西；报告**边跑边写**，运行中即可打开看进度 |
 | [health-fix.ps1](scripts/health-fix.ps1) | **按规则清理残留**：能改路径的改路径（程序只是搬走了），确认没了的删记录（含引用清理） | 默认**试运行**，`-Apply` 才写入（需要管理员）；每条改动前 `reg export` 到 `local/rollback/<运行时间戳>/`，**备份失败则该条改动被跳过** |
-| [repair-migrated-apps.ps1](scripts/repair-migrated-apps.ps1) | **批量路径迁移修复**：按"旧路径 → 新路径"映射表改写注册表 | 默认试运行（`.cmd` 与 `.ps1` 一致：不带参数即试运行）；写入前检查目标文件是否真的存在（不把死路径改成另一个死路径）；映射表在 `local/repair-migrated-apps.local.psd1` |
+| [repair-migrated-apps.ps1](scripts/repair-migrated-apps.ps1) | **批量路径迁移修复**：按"旧路径 → 新路径"映射表改写注册表 | 默认试运行（`.cmd` 与 `.ps1` 一致：不带参数即试运行）；写入前检查目标文件是否真的存在（不把死路径改成另一个死路径）；映射表在 `local/repair-migrated-apps.local.psd1`——**脚本里一条具体路径都没有**，没配映射时会明确报"未执行有效检查"并以退出码 3 结束（那是"没查"，不是"没事"） |
 
 三者都用 `.cmd` 启动器包装：**优先 `pwsh`（PowerShell 7.x），找不到才回退 5.1**。
 
@@ -89,7 +89,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 
 **体检报告**落在 `local/reports/<时间戳>/`：`report.md`（人读）+ `findings.csv`（逐条明细）+ `snapshot.json`（与上次对比磁盘增长）。
 
-体检常用开关：`-SkipOldPathScan`（跳过最慢的全注册表旧路径扫描）、`-SkipAssocScan`、`-SkipClsidScan`、`-SizeScan`（统计 `%LOCALAPPDATA%`/`%APPDATA%` 体积；**没有 WizTree 时的兜底**，有 WizTree 就直接用它）、`-WarnFreePercent 15`。
+体检常用开关：`-SkipOldPathScan`（跳过最慢的全注册表旧路径扫描）、`-SkipAssocScan`、`-SkipClsidScan`、`-SizeScan`（统计 `%LOCALAPPDATA%`/`%APPDATA%` 体积；**没有 WizTree 时的兜底**，有 WizTree 就直接用它）、`-WarnFreePercent 15`、`-ScanConfigFiles -AppsRoot <目录>`（顺带扫该目录下文本配置里的旧路径；**不指定 `-AppsRoot` 时本节会明确报"未执行有效检查"**，而不是静默什么都不扫）。
+
+> **填映射表这一步现在还是手工的**：`repair-migrated-apps` 需要你按本机情况写 `local/repair-migrated-apps.local.psd1`
+> （旧路径从哪来？见 `migration-checklist.md` 的迁移前清单，或直接用 Everything 找"程序搬到哪了"）。
+> 自动产出改指候选（`-DiscoverTargets`）**尚未实现**，列在后续计划里。
 
 ## 体检覆盖的 12 类"程序位置登记"
 

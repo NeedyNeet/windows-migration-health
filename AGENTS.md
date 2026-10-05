@@ -160,7 +160,9 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
 5. **删任何注册表键/值前必须 `reg export` 备份到 `local/rollback/`**，且必须先跑试运行（脚本默认就是试运行）。  `[test] tests\writepath.tests.ps1`（备份真的产出、失败即跳过） + `[test] tests\launchers.tests.ps1`（默认试运行）
 6. **每个清理段落结束打印计数**（0 条也要打印）——曾因漏定义一个函数导致整段静默跳过而没人发现。  `[manual]` 没法机械判定"段落"的边界，也没法判定该不该打印计数 —— 只能人看输出
 7. **报告/日志只写 `local/`**，不要写进 `docs/` 或仓库根目录。  `[test] .github\workflows\ci.yml`（测试跑完 `git status --porcelain` 必须为空）
-8. **机器专属值不写死在脚本里**：旧用户目录名、health-fix 的路径改指表、repair 的迁移映射表都放在 `local\*.local.psd1`（已被 gitignore 排除），模板见 `config\*.local.example.psd1`。脚本里只留通用规则（如 health-fix 的 C/D 段）。  `[manual]` 没有机械判据能区分"通用规则"与"机器专属值"，只能靠 review
+8. **机器专属值不写死在脚本里**：旧用户目录名、health-fix 的路径改指表、repair 的迁移映射表都放在 `local\*.local.psd1`（已被 gitignore 排除），模板见 `config\*.local.example.psd1`。脚本里只留通用规则（如 health-fix 的 C/D 段）。  `[test] tests\lint.tests.ps1`（规则 8：`scripts\` 下出现非 C 盘/具体用户名的路径字面量即违规，含 `<占位符>` 的模板放行；豁免写 `# lint-ok: 理由`）
+    - **本次刚补完的地方**（2026-10-05）：`repair-migrated-apps.ps1` 的 `$pathMapBase` 里曾写死 8 条本机路径（含钉版本的 `app-3.19.0`）、快捷方式清单里 2 条，已全部搬进 `local\`，`$pathMapBase` 留空数组 + 注释。此前没有机械判据，只能靠 review —— README 那句"脚本本身不含任何机器专属信息"当时是**假的**。
+    - 映射表为空**不等于**"无需改指"：`repair` 会明确报"未执行有效检查"并 `exit 3`（同"报告不许有假绿"那条）。
 
 9. **删除类操作先收紧匹配、再 dry-run 打印清单**：通配符太宽会误伤（如 `wps` 命中 `amdwps` 这个 AMD 驱动）；匹配用 `^前缀\.` 或白名单，并且**永远先看清单再执行**。  `[test] tests\health-fix.gate.tests.ps1`（目标仍存在就绝不删、不再整族删）
 10. **不要用 `Test-Path` 单独判定"存在/不存在"**：它在权限受限路径上可能静默返回 False，把存在的文件报成缺失（本项目历史上因此产生 31 条假阳性）。统一走 `Get-ExceptionClass`（区分 `missing` / `denied`），`\WindowsApps\` 与 `\DriverStore\` 直接不判定。  `[test] tests\repair.exists.tests.ps1`
@@ -177,6 +179,10 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
     - `Import-PowerShellDataFile` **不允许 `[ordered]`**（psd1 是受限语言）→ 顺序敏感的数据用「数组 + `Old`/`New`」表达
     - `[regex]::Replace` 的**替换串**里 `$` 是特殊字符：`$&`、`` $` ``、`$'` 在任何模式里都有效、会被真的替换掉（实测 New = `D:\x$&y` 会写成 `D:\xC:\Appy`），而 `$1` / `$Recycle` 这类不存在的组会被当字面量留着 —— **不是每种写法都暴露，所以更容易漏**。替换前把 `$` 转义成 `$$`
     - `Get-ChildItem -Filter` **不带 `-Recurse` 会静默漏掉子目录**（`scripts\dev\` 下的脚本曾因此不受语法检查）
+    - **`Get-ChildItem -Include` 配 `-LiteralPath` 在 5.1 上被静默忽略**：`-LiteralPath <目录> -Recurse -File -Include *.ini`
+      在 Windows PowerShell 5.1 会把该目录下**所有**文件都返回（7.x 正常过滤），于是两个引擎拿到的文件清单都不一样；
+      换成 `-Path <目录>\*` 又会在 5.1 上拿过滤条件去剪子目录（子目录名不匹配就不递归 → 漏文件）。
+      正确写法是 `-Path` + **目录本身**（尾部不带 `*`），目录名含 `[` `]` 时先用 `[WildcardPattern]::Escape` 转义。  `[test] tests\health-check.configscan.tests.ps1`
     - 变量名**不区分大小写**：`$R` 与 `$r` 是同一个变量（曾因此覆盖掉变量、拿到空结果）
     - `[IO.File]::*` 用的是**进程当前目录**，不是 PowerShell 的 `cd` —— 相对路径会静默失败，一律用绝对路径
     - **日志函数的输出会污染返回值**：`Say` 走 success stream。在有值返回的函数里裸写 `Say ...`，

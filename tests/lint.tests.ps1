@@ -7,6 +7,7 @@
 #
 #  本文件覆盖：
 #    · 硬性约定 3  —— 禁止按 .NET 异常类型 catch
+#    · 硬性约定 8  —— scripts\ 下不得出现机器专属路径字面量
 #    · 硬性约定 14 —— [IO.File]::* 用的是**进程 CWD**（不是 PowerShell 的 cd），不得配相对路径字面量
 #    · 硬性约定 14 —— Get-ChildItem -Filter 不带 -Recurse 会静默漏掉子目录
 #  刻意**不**在这里覆盖的（已有归属）：
@@ -210,6 +211,40 @@ function Find-NestedFunction {
     return $out
 }
 
+# 规则 8：scripts\ 下不得出现**机器专属路径字面量**（硬性约定 8 的机械部分）。
+# 判据（刻意保守，宁漏不误报）：
+#   * 盘符不是 C: 的绝对路径（`D:\...`、`E:\...`）—— C: 是 Windows 的默认系统盘，系统路径
+#     （C:\Windows、C:\Program Files…）与注册表路径（HKLM:\…、HKCU:\…）都放行；
+#   * `C:\Users\<具体名字>`：占位符 `<...>` / 变量 `$...` / 环境变量 `%...%` 开头的放行
+#     （`"C:\Users\$OldProfileName"` 是通用规则，不是机器值）。
+# 目标是拦住"把本机布局写进产品脚本"这一类：同一张表在别人机器上要么空转，要么把登记
+# 改写成另一个不存在的路径。含 `<`（占位符惯例）或 `...` 的字面量视为模板，放行。
+# 只查 scripts\：tests\ 里的 D:\New / C:\Users\old 是**合成的**测试夹具，不是机器值。
+function Find-MachinePathLiteral {
+    param([string[]]$Lines)
+    $out = @()
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        $l = $Lines[$i]
+        if ($l.TrimStart().StartsWith('#')) { continue }
+        $lits = @()
+        foreach ($m in [regex]::Matches($l, "'([^']*)'"))    { $lits += $m.Groups[1].Value }
+        foreach ($m in [regex]::Matches($l, '"([^"]*)"'))    { $lits += $m.Groups[1].Value }
+        foreach ($v in $lits) {
+            if ($v -notmatch '[A-Za-z]:\\') { continue }
+            if ($v -match '<' -or $v -match '\.\.\.') { continue }   # 模板/占位符
+            $bad = $false
+            if ($v -match '(^|[^A-Za-z0-9])[D-Zd-z]:\\') { $bad = $true }          # 非系统盘
+            elseif ($v -match '^C:\\Users\\([^\\]+)') {
+                if ($matches[1] -notmatch '^[<$%]') { $bad = $true }               # 具体用户名
+            }
+            if (-not $bad) { continue }
+            if (Test-LintExempt $Lines $i) { continue }
+            $out += [pscustomobject]@{ Line = $i + 1; Text = $l.Trim(); Literal = $v }
+        }
+    }
+    return $out
+}
+
 Test-Case '规则自测：每条规则都能抓到已知违规，也不误报' {
     # 每条断言都把**实测数目**写进消息：这个文件自己就是检查器，检查器出问题时，
     # 失败信息必须能直接告诉我"抓到了几处"，否则调试它又得靠猜。
@@ -300,6 +335,23 @@ Test-Case '规则自测：每条规则都能抓到已知违规，也不误报' {
         $hits4 = @(Find-NestedFunction $probe4)
         Assert-Equal $hits4.Count 3 ("规则 7 应当抓到 3 处（if/foreach/函数内），实际 {0}（{1}）" -f $hits4.Count, (($hits4 | ForEach-Object { $_.Func }) -join ','))
     } finally { Remove-Item -LiteralPath $probe4 -Force -ErrorAction SilentlyContinue }
+    # 规则 8：机器专属路径字面量
+    $c = @(Find-MachinePathLiteral @("@{ Old = 'C:\X'; New = 'D:\Apps\Installed\Y' }")).Count
+    Assert-True ($c -eq 1) ("非 C 盘路径字面量应抓到 1 处，实际 {0}" -f $c)
+    $c = @(Find-MachinePathLiteral @('$k = ''HKLM:\Software\Classes\x''')).Count
+    Assert-True ($c -eq 0) ("注册表路径不该被抓到，实际 {0}" -f $c)
+    $c = @(Find-MachinePathLiteral @('$p = ''C:\Program Files (x86)\x''')).Count
+    Assert-True ($c -eq 0) ("系统路径不该被抓到，实际 {0}" -f $c)
+    $c = @(Find-MachinePathLiteral @('$p = ''C:\Users\<旧用户名>\x''')).Count
+    Assert-True ($c -eq 0) ("占位符应当放行，实际 {0}" -f $c)
+    $c = @(Find-MachinePathLiteral @('$p = ''C:\Users\someone\x''')).Count
+    Assert-True ($c -eq 1) ("具体用户名应抓到 1 处，实际 {0}" -f $c)
+    $c = @(Find-MachinePathLiteral @('$p = "C:\Users\$OldName\x"')).Count
+    Assert-True ($c -eq 0) ("变量拼接应当放行，实际 {0}" -f $c)
+    $c = @(Find-MachinePathLiteral @('# D:\OldAppFolder')).Count
+    Assert-True ($c -eq 0) ("整行注释不该被抓到，实际 {0}" -f $c)
+    $c = @(Find-MachinePathLiteral @('# lint-ok: 模板示例', '''D:\OldAppFolder'',''')).Count
+    Assert-True ($c -eq 0) ("上一行豁免应当生效，实际 {0}" -f $c)
 }
 Test-Case '硬性约定 3：没有按 .NET 异常类型 catch 的地方' {
     $bad = @()
@@ -353,6 +405,16 @@ Test-Case '函数定义必须在顶层（实测：插进 if 分支里会静默�
     $bad = @()
     foreach ($f in Get-LintTargets) {
         $bad += @(Find-NestedFunction $f.FullName | ForEach-Object { "{0}:{1}  函数 {2} 嵌在分支/函数里" -f $f.Name, $_.Line, $_.Func })
+    }
+    Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
+}
+
+Test-Case '硬性约定 8：scripts\ 下不得出现机器专属路径字面量（换机器就会失效或误改）' {
+    # 只扫 scripts\（产品）；tests\ 里的 D:\New / C:\Users\old 是合成的夹具，不是机器值。
+    # 这条规则是本次"把 $pathMapBase 搬空"的防复发装置：搬走了还得保证搬不回来。
+    $bad = @()
+    foreach ($f in (Get-ChildItem (Join-Path $repo 'scripts') -Recurse -File -Filter '*.ps1')) {
+        $bad += @(Find-MachinePathLiteral (Get-Content $f.FullName -Encoding UTF8) | ForEach-Object { "{0}:{1}  字面量={2}" -f $f.Name, $_.Line, $_.Literal })
     }
     Assert-True ($bad.Count -eq 0) (($bad | Select-Object -First 3) -join ' / ')
 }
