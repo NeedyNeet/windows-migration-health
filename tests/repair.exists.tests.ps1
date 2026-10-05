@@ -63,6 +63,29 @@ try {
         }
         Assert-True ($bad.Count -eq 0) ("仍有判文件存在用的裸 Test-Path：{0}" -f ($bad -join ' ; '))
     }
+
+    # ---- 同族：**注册表键**的"读不到 ≠ 不存在" ----
+    # 走查器原来用 `Test-Path` 当快速门、`Get-Item -EA SilentlyContinue`、`Get-ChildItem -EA SilentlyContinue`：
+    # 三处都会把"权限读不到"变成"这个键不存在/这层没有子键"，于是既不改也不报 —— 静默跳过。
+    Invoke-Expression (Get-ScriptFunctionText -Path $target -Name 'Get-KeyProbeState')
+
+    Test-Case '读键失败的异常类型名 -> 状态（类型名取自两台引擎的实测）' {
+        Assert-Equal (Get-KeyProbeState '') 'ok' '没有异常应当是 ok'
+        Assert-Equal (Get-KeyProbeState 'SecurityException') 'denied' 'HKLM:\SECURITY 实测抛 SecurityException'
+        Assert-Equal (Get-KeyProbeState 'UnauthorizedAccessException') 'denied' '权限异常必须判 denied'
+        Assert-Equal (Get-KeyProbeState 'ItemNotFoundException') 'missing' '键不存在实测抛 ItemNotFoundException'
+        Assert-Equal (Get-KeyProbeState 'DriveNotFoundException') 'missing' '盘不存在实测抛 DriveNotFoundException'
+        Assert-Equal (Get-KeyProbeState 'SomethingWeirdException') 'unknown' '说不清的一律 unknown（按"没读到"记账，不按"不存在"）'
+    }
+
+    Test-Case '走查器不再静默丢掉"读不到"，且把读不到的键记账' {
+        $code = (@([IO.File]::ReadAllLines($target, [Text.Encoding]::UTF8)) |
+                 Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n"
+        Assert-NotMatch $code 'Get-Item -LiteralPath \$key -ErrorAction SilentlyContinue'    '取键失败不许再静默 continue'
+        Assert-NotMatch $code 'Get-ChildItem -LiteralPath \$key -ErrorAction SilentlyContinue' '子键枚举失败不许再静默跳过（会整棵漏掉）'
+        Assert-Match    $code 'Get-KeyProbeState'  '失败必须交给 Get-KeyProbeState 分类'
+        Assert-Match    $code '\$script:unreadable' '读不到的键必须记账，结尾如实报出'
+    }
 } finally {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }

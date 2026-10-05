@@ -165,7 +165,7 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
     - 映射表为空**不等于**"无需改指"：`repair` 会明确报"未执行有效检查"并 `exit 3`（同"报告不许有假绿"那条）。
 
 9. **删除类操作先收紧匹配、再 dry-run 打印清单**：通配符太宽会误伤（如 `wps` 命中 `amdwps` 这个 AMD 驱动）；匹配用 `^前缀\.` 或白名单，并且**永远先看清单再执行**。  `[test] tests\health-fix.gate.tests.ps1`（目标仍存在就绝不删、不再整族删）
-10. **不要用 `Test-Path` 单独判定"存在/不存在"**：它在权限受限路径上可能静默返回 False，把存在的文件报成缺失（本项目历史上因此产生 31 条假阳性）。统一走 `Get-ExceptionClass`（区分 `missing` / `denied`），`\WindowsApps\` 与 `\DriverStore\` 直接不判定。  `[test] tests\repair.exists.tests.ps1`
+10. **不要用 `Test-Path` 单独判定"存在/不存在"**：它在权限受限路径上可能静默返回 False，把存在的文件报成缺失（本项目历史上因此产生 31 条假阳性）。统一走 `Get-ExceptionClass`（区分 `missing` / `denied`），`\WindowsApps\` 与 `\DriverStore\` 直接不判定。  `[test] tests\repair.exists.tests.ps1`（`Test-Exists` 的语义 + 注册表键的 `Get-KeyProbeState` 判定表） + `[test] tests\health-fix.config.tests.ps1`（配置文件**读不到** → 致命退出，不许当成"没有配置"） + `[test] tests\health-check.configscan.tests.ps1`（扫描根**读不到** → denied，不许报成"根不存在"）
 11. **判定受环境限制时，结论必须复核**：报告里若"严重"项集中在某个目录，或结论依赖权限/引擎行为，先用另一个环境（普通用户令牌、另一引擎）抽样复核真值，再决定动不动手。  `[manual]` "抽样复核真值"是人的动作，没有可断言的产物
 12. **检查者自己也会坏 —— 判据不能只看退出码。** 实测事故：`tests\lib\TestKit.ps1` 一旦丢了 BOM，5.1 会把框架按 ANSI 解码、加载失败，于是 `Test-Case` / `Complete-TestRun` 都不存在，套件"静默跑完"而且**退出码是 0**；当时的 pre-commit 钩子只看退出码，就打印"检查通过"并**把坏文件放进了提交**（后来用 `git reset` 撤掉）。规矩：  `[test] tests\harness.canary.tests.ps1`（判据含 `##RESULT`、钩子判据一致、引擎先探测）
     - 判据与 `tests\run-tests.ps1` 一致：**退出码为 0 且输出里有 `##RESULT: PASS`**；没有 `##RESULT` 标记一律按失败处理
@@ -191,6 +191,7 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
       于是「备份失败」被判成「备份成功」、改动照做且没有备份。写成 `$null = Say ...` 即可，
       `tests\lint.tests.ps1` 会拦住这种写法。
     - **函数定义必须在顶层**：PowerShell 的函数是**执行到定义语句那一刻**才生效的，所以定义一旦被写进 `if` / `foreach` 里，它只在那个分支走到时才存在 —— 别的路径上调用会报「术语不会被识别」。实测事故：`Get-OldPathKind` 被插进 `if ($hits.Count -eq 0) { … }` 分支，于是只有"命中 0 个键"时才定义，正常路径直接炸。**而 AST 抽取能跨层找到它，所以 extract 型测试全绿** —— 只有真跑那条路径才暴露。`tests\lint.tests.ps1` 的规则 7 会拦。  `[lint-7]`
+    - **`.NET` 方法名写错不会报错，只会静默改变判定**：实测事故（2026-10-05）—— `[System.IO.Directory]::GetAttributes` **这个方法根本不存在**（对目录要用 `[System.IO.File]::GetAttributes`，它对文件与目录都有效），于是它恒抛 `RuntimeException`：`health-check` 的 `Get-Status` 与 `health-fix` 的 `Test-Missing` 里各有两个分支因此成了**死代码**，所有走到那里的路径被兜底成同一个状态。它不改坏任何东西（偏保守），但"目标确实不存在"这条判据少了一半，而且**没人会发现**。`tests\lint.tests.ps1` 规则 9 用反射拦这类错误。  `[lint-9]`
 ### 动手改文件时的约定（都是被咬出来的）
 
 - **改文件一律用带计数的守卫** `[manual]`：脚本化替换前先断言"期望 N 处匹配"，不是 N 就中止、绝不写。
