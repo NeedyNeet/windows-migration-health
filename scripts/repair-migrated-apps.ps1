@@ -356,31 +356,81 @@ $targets = @(
 )
 
 # ------------------------------------------------------------------ discovery pass
-# Enumerating ProgIDs by hand kept missing places (context-menu verbs, CLSID in-proc shell
-# extensions, "Open with" verbs, URL handlers...). So instead: let reg.exe find EVERY key
-# whose name or data still contains an old path, then hand those keys to the reliable
-# walker above. reg.exe does the searching natively (fast); the walker does the writing.
-function Find-KeysByText {
-    param([string]$Root, [string]$Needle)
-    $found = @()
-    $current = ''
-    foreach ($line in (& reg.exe query $Root /f $Needle /s 2>$null)) {
-        if ($line -match '^(HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER)\\(.+)$') {
-            $hive = if ($matches[1] -eq 'HKEY_LOCAL_MACHINE') { 'HKLM:' } else { 'HKCU:' }
-            $current = $hive + '\' + $matches[2]
-            # the matching key itself is the most precise target
-            if ($line -match [regex]::Escape($Needle)) { $found += $current }
-        } elseif ($line -match [regex]::Escape($Needle)) {
-            if ($current) { $found += $current }   # needle is in one of this key's values
+# 手工枚举 ProgID 总会漏（右键菜单动词、CLSID 内嵌 shell 扩展、"打开方式"动词、URL 处理器…）。
+# 所以反过来：先把"名字或数据里仍写着旧路径"的键**全都找出来**，再交给上面那个可靠的走查器去改。
+#
+# 为什么不再用 `reg.exe query <根键> /f <needle> /s`：
+#   · 它是**逐条 needle 各跑一遍**，而实测约 98% 的时间花在"读取每一个值的数据"上 ——
+#     这步与 needle 内容无关，13 条 needle 等于把最贵的活重复 13 遍。
+#     本机实测（同一份 13 条映射表、3 个根键、39 次 reg.exe 调用）：发现阶段 **≈321 秒**。
+#   · 自己遍历可以只走一遍、且只读**字符串类型**的值（路径只可能出现在字符串里），不打印中间结果。
+#     同一份映射表实测：发现阶段 **55.1 秒**、整个试运行 **61.3 秒**（原 326.5 秒，5.3×）。
+#     health-check 的第 12 节早就这么做了（5 个根键 51 万键 / 73 万值 ≈ 59.5 秒，原来 52~55 分钟）。
+#   · 换实现前后**计划改写逐行一致**（132/132 行、命中 66 个键完全相同）—— 见提交信息里的验收数据。
+# 命中判据与旧实现保持一致：**键路径**含 needle、**值名**是 needle、或**值数据**含 needle。
+# 显式指定 **64 位视图** —— 结果与"脚本跑在 32 位还是 64 位 PowerShell 下"无关（reg.exe 那版没有这个保证）。
+function Find-MigratedKeys {
+    param([string[]]$Roots, [string[]]$Needles)
+    $hits = @{}
+    foreach ($psRoot in $Roots) {
+        $hive = [Microsoft.Win32.RegistryHive]::CurrentUser
+        $sub  = $psRoot.Substring(6)                       # 'HKCU:\' / 'HKLM:\' 都是 6 个字符
+        if ($psRoot -like 'HKLM:\*') { $hive = [Microsoft.Win32.RegistryHive]::LocalMachine }
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive, [Microsoft.Win32.RegistryView]::Registry64)
+        $k0 = $null
+        try { $k0 = $base.OpenSubKey($sub) } catch { $k0 = $null }
+        if (-not $k0) {
+            # 打不开就如实记账（"读不到" ≠ "这棵树里没有旧路径"），绝不当成"扫过且干净"
+            $script:unreadable += [pscustomobject]@{ Key = $psRoot; Why = '发现阶段打不开（权限）' }
+            continue
+        }
+        $stack = New-Object System.Collections.Stack
+        $stack.Push(@($k0, $psRoot))
+        # 无损预筛：若**每条** needle 都含 ':'（盘符路径都是这样），那么"自身不含 ':' 的值名/值数据"
+        # 必然不可能命中 —— 跳过它们能省掉大量逐条比对。判据仍然是原来的 OrdinalIgnoreCase 包含，
+        # 预筛只决定"要不要比"，不会把本该命中的漏掉（needle 里的 ':' 必须出现在被比对的字符串里）。
+        $colonNeeded = @($Needles | Where-Object { $_.IndexOf(':') -lt 0 }).Count -eq 0
+        while ($stack.Count -gt 0) {
+            $item = $stack.Pop(); $k = $item[0]; $kp = $item[1]
+            $hit = $false
+            foreach ($n in $Needles) { if ($kp.IndexOf($n, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $hit = $true; break } }
+            foreach ($vn in $k.GetValueNames()) {
+                if (-not $hit -and $vn -and (-not $colonNeeded -or $vn.Contains(':'))) {
+                    foreach ($n in $Needles) { if ($vn.IndexOf($n, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $hit = $true; break } }
+                }
+                if ($hit) { break }
+                $kind = $k.GetValueKind($vn)
+                if ($kind -ne [Microsoft.Win32.RegistryValueKind]::String -and
+                    $kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString -and
+                    $kind -ne [Microsoft.Win32.RegistryValueKind]::MultiString) { continue }
+                $raw = $k.GetValue($vn, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                $v = if ($raw -is [array]) { ($raw -join "`n") } else { [string]$raw }
+                if (-not $v) { continue }
+                if ($colonNeeded -and $v.IndexOf(':') -lt 0) { continue }
+                foreach ($n in $Needles) { if ($v.IndexOf($n, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $hit = $true; break } }
+                if ($hit) { break }
+            }
+            if ($hit) { $hits[$kp] = $true }
+            foreach ($sn in $k.GetSubKeyNames()) {
+                $c = $null
+                try { $c = $k.OpenSubKey($sn) }
+                catch {
+                    # "读不到" ≠ "不存在"：记下来，结尾如实报出，绝不静默跳过整棵子树
+                    $script:unreadable += [pscustomobject]@{ Key = ($kp + '\' + $sn); Why = '发现阶段读不到（权限）' }
+                    continue
+                }
+                if ($c) { $stack.Push(@($c, ($kp + '\' + $sn))) }
+            }
+            $k.Close()
         }
     }
-    return ($found | Sort-Object -Unique)
+    return $hits
 }
 
 $discoveryRoots = @(
-    'HKCU\Software\Classes',
-    'HKLM\Software\Classes',
-    'HKLM\Software\WOW6432Node\Classes'
+    'HKCU:\Software\Classes',
+    'HKLM:\Software\Classes',
+    'HKLM:\Software\WOW6432Node\Classes'
 )
 # 搜索的关键词就是本机映射表里的旧前缀（表是空的就没得搜 —— 那种情况在上面已经致命退出了）。
 # 旧用户目录（C:\Users\<旧用户名>）是**另一个、宽得多**的问题：搜它会拖进所有曾在旧用户目录里
@@ -393,18 +443,13 @@ $discoveryRoots = @(
 # 同理，mpv 的 io.mpv.<类型> 一族建议重跑它自己的安装器（<新位置>\installer\mpv-install.bat），
 # 本脚本只兜底处理它漏下的部分。
 $needles = @($pathMap.Keys)
-$discovered = @{}
-foreach ($root in $discoveryRoots) {
-    foreach ($needle in $needles) {
-        foreach ($key in (Find-KeysByText -Root $root -Needle $needle)) {
-            if (-not $discovered.ContainsKey($key)) { $discovered[$key] = $true }
-        }
-    }
-}
+$discoveryWatch = [Diagnostics.Stopwatch]::StartNew()
+$discovered = Find-MigratedKeys -Roots $discoveryRoots -Needles $needles
+$discoveryWatch.Stop()
 foreach ($key in $discovered.Keys) {
     $targets += @{ Root = $key; Profile = ($key -like 'HKCU:\Software\Classes\*') }
 }
-Write-Output ("discovery: {0} additional key(s) located by reg.exe search" -f $discovered.Count)
+Write-Output ("discovery: {0} additional key(s) located by .NET registry walk in {1:N1}s" -f $discovered.Count, $discoveryWatch.Elapsed.TotalSeconds)
 
 # the same key can arrive from several places (explicit list + discovery):
 # walk each key once
@@ -481,10 +526,16 @@ if ($script:unreadable.Count -gt 0) {
     Write-Output ''
     Write-Output ("--- 读不到、因此**没有被检查**的键（{0} 个）---" -f $script:unreadable.Count)
     Write-Output '  这些键下的登记既没被改写，也**没有**被确认"无需改写" —— 别把这一节读成"干净"。'
-    foreach ($u in ($script:unreadable | Select-Object -First 10)) {
-        Write-Output ("    {0}   {1}" -f $u.Key, $u.Why)
+    # 按位置聚合：本机实测 233 条全在 HKCU\Software\Classes\WOW6432Node\CLSID 一棵子树下，
+    # 逐条打印 GUID 路径没有意义，要看的是"哪棵子树读不到、为什么"。
+    $groups = @($script:unreadable | Group-Object { ((($_.Key -split '\\')[0..2]) -join '\') } | Sort-Object Count -Descending)
+    foreach ($g in ($groups | Select-Object -First 6)) {
+        Write-Output ("    {0,-56} {1} 个" -f $g.Name, $g.Count)
     }
-    if ($script:unreadable.Count -gt 10) { Write-Output ("    …另有 {0} 个（完整清单不落盘，需要时用 -Apply 之外的只读方式单独导出）" -f ($script:unreadable.Count - 10)) }
+    if ($groups.Count -gt 6) { Write-Output ("    …另有 {0} 处不同位置" -f ($groups.Count - 6)) }
+    $why = @($script:unreadable | Group-Object Why | ForEach-Object { "{0}×{1}" -f $_.Count, $_.Name })
+    Write-Output ("    原因：{0}" -f ($why -join '；'))
+    Write-Output '    （要逐个核对请用能读到这些键的权限重跑 —— 它们**不是**"已确认没问题"。）'
 }
 
 # ---------------------------------------------------------------- shortcuts
