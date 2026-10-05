@@ -73,6 +73,12 @@ reg query "HKLM\Software\Microsoft\Windows\CurrentVersion" /f "D:\mpv-lazy" /s
 
 **成本提示（实测）**：`reg query /f /s` 的开销 ≈ **根键数 × 关键词数**，**单次约 1 分钟**。本机实测 11 条清单 × 5 个根键 = 55 次 ≈ **52~55 分钟**；不同根键差异极大（`…\Microsoft\Windows\CurrentVersion` 单次就 217 秒，因为它要把**每一个值的数据**读出来 —— 实测占单次耗时的 98%，而枚举键名只要 2.3 秒、枚举值名 4.2 秒）。
 
+> **本仓库的两个脚本都已经不用 `reg query` 做批量搜索了**：`health-check` 第 12 节与
+> `repair-migrated-apps` 的发现阶段都用 .NET 自己走一遍树（只读字符串类型的值，且一次遍历覆盖
+> 全部关键词）。本机实测（同一份 13 条关键词、3 个根键）：`repair` 的发现阶段
+> **321 秒 → 55.1 秒**、整个试运行 **326.5 秒 → 61.3 秒**，而且换实现前后**计划改写逐行一致**
+> （132/132 行、命中 66 个键完全相同）。上面那条成本模型只适用于**手工排查**时直接敲 `reg query` 的场景。
+
 ---
 
 ## 3. 用现成工具更快
@@ -93,7 +99,7 @@ reg query "HKLM\Software\Microsoft\Windows\CurrentVersion" /f "D:\mpv-lazy" /s
 |---|---|
 | `scripts/health-check.ps1`（只读体检） | 逐类核对上表 **1–12 类**的目标是否存在 → 输出 `report.md`（人读）+ `findings.csv`（逐条明细）；另外检查孤儿安装缓存、旧路径残留、磁盘容量与增长。**没查到的会明说**：清单为空/全是占位符、或用了 `-Skip*` 开关时，报告写"本节未执行检查"并记入 `findings.csv`，不会给绿勾 |
 | `scripts/health-fix.ps1`（按规则清理） | A 段改路径（程序搬走）→ B 段删已卸载软件的记录/服务/协议 → C 段清"指向已删 ProgID"的引用与图标覆盖 → D 段清悬空引用。判据统一是 `Test-Missing`（目标确实不存在才动手）；每条改动前 `reg export` 到 `local/rollback/<运行时间戳>/`，**备份失败则该条改动被跳过** |
-| `scripts/repair-migrated-apps.ps1`（迁移批量改写） | 按 `local\repair-migrated-apps.local.psd1` 的"旧→新"映射改写上表 1/2/4/8/9/12 类，并用 `reg query` 发现更多引用点；写入前检查目标文件是否真的存在（`Test-Exists`） |
+| `scripts/repair-migrated-apps.ps1`（迁移批量改写） | 按 `local\repair-migrated-apps.local.psd1` 的"旧→新"映射改写上表 1/2/4/8/9/12 类，并用 **.NET 一次性遍历**（`Find-MigratedKeys`，与 `health-check` 第 12 节同一套做法）发现更多引用点；写入前检查目标文件是否真的存在（`Test-Exists`） |
 
 > **第 6 类的代码位置**：`scripts\health-check.ps1` 第 7 节，枚举由 `Get-ClsidExtensionKeys` 完成 —— 它扫的是 `Classes\CLSID` **子树**。注意 `Classes` 这一层里"以 `{` 命名"的键**不是**第 6 类的登记位置（正常机器上几乎不存在这种键）；只看这一层会把"检查了 0 项"打成绿勾（见 `AGENTS.md` 硬性约定 16）。
 >

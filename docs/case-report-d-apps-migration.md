@@ -228,6 +228,9 @@ mpv 本体一切正常（`D:\Apps\Portable\mpv-lazy\mpv.exe`，v0.40.0-119，实
 ### 脚本相应升级（避免以后再来一轮）
 
 `repair-migrated-apps.ps1` 新增 **发现阶段**：先用原生 `reg.exe query <root> /f <旧路径前缀> /s` 在三个 `Classes` 大树里定位**所有**仍含旧路径的键，再把这些键交给原有的可靠改写器（`.NET GetValue` 读取 + `Set-Item/Set-ItemProperty` 写入）。这样右键菜单动词、CLSID 内嵌 shell 扩展、URL 协议、`Applications\<exe>` 这些"藏得深"的位置不会再被漏掉。
+> （**后续变更**，2026-10-05：发现阶段本身已改成 .NET 一次性遍历 —— `reg query` 的成本是"根键数 × 关键词数"，
+> 本机实测 13 条关键词 × 3 个根键共 39 次调用 ≈ 321 秒；改完是 55.1 秒（整个试运行 326.5 → 61.3 秒），
+> 且换实现前后**计划改写逐行一致**。上面记的是当时的实现，见 [12 类登记参考 §2](registry-reference.md)。）
 
 其他改进：
 - **死路径保护扩展**：改写后若目标文件（`.exe/.dll/.ico/.com/.bat/.cpl/.msc/.sys`）不存在，则**跳过并报告**，绝不写入另一个同样无效的路径；

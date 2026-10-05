@@ -100,7 +100,7 @@ Windows **应用迁移后的登记修复**与**长期健康体检**工具集：�
 | 看谁占了空间、找大户 | `mcp__wiztree__wiztree_scan` → `wiztree_top_folders` / `wiztree_folder_breakdown` | 不要用 `health-check.ps1 -SizeScan`（那是"没装 WizTree"时的兜底实现，慢几十倍），更不要自己写递归累加 |
 | 迁移后"程序搬到哪了" | `mcp__everything__everything_search`（毫秒级） | 不要 `Get-ChildItem -Recurse -Filter` 逐目录碰运气 |
 | 校验 `local/rollback` 备份集合、迁移前后对比 | `mcp__bcompare__compare_folders`（先 `dryRun: true` 预览） | 不要手工数文件 |
-| 查"注册表哪里还引用旧路径" | 脚本里的 `reg query /f /s`，或人工用 RegScanner / Registry Finder 探查与预览替换 | —— |
+| 查"注册表哪里还引用旧路径" | 本仓库脚本里的 `Find-OldPathHits` / `Find-MigratedKeys`（.NET 一次性遍历，只读字符串值，秒级~分钟级），或人工用 RegScanner / Registry Finder 探查与预览替换 | 不要用 `reg query /f <关键词> /s` 逐个关键词跑：开销 ≈ 根键数 × 关键词数、单次约 1 分钟（实测 55 次 ≈ 52~55 分钟），而且**看不到跨层拼出来的路径** |
 
 **红线：脚本不得依赖任何 MCP 或本地服务。** `scripts/*.ps1` 必须只靠 Windows 自带组件就能在任意机器上运行——这是它交给别人用的前提。MCP 工具只负责**探索、预览、交叉验证**；执行与留痕交给脚本（可复现、有备份、有日志）。
 
