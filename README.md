@@ -22,15 +22,6 @@
 三种成因症状相同、核对与修复逻辑也相同，所以工具不分家：`health-check` 逐项核对"登记指向的目标是否真的存在"。
 本项目起因是一次真实事故（成因①）——完整过程与证据见[案例报告](docs/case-report-d-apps-migration.md)。
 
-```mermaid
-flowchart LR
-    A["① 体检<br/>health-check（只读）"] --> B{"登记指向的目标<br/>真的存在吗？"}
-    B -- "程序还在，只是搬走了" --> C["② 改指<br/>repair-migrated-apps"]
-    B -- "确认已卸载" --> D["③ 清残留<br/>health-fix"]
-    C --> A
-    D --> A
-```
-
 ## 📌 目录
 
 > 锚点按 GitHub 实测形式写：emoji 会被去掉，其后的空格变成**前导连字符**（`## 🚀 快速开始` → `#-快速开始`）。

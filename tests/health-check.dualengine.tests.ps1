@@ -24,6 +24,25 @@ $target = Join-Path $repo 'scripts\health-check.ps1'
 # 每次跑都会变、与引擎无关的类别：不参与对比，但**必须把排除条数报出来**（静默排除也是假绿）
 $volatileCategories = @('容量', '目录体积')
 
+# 易变**位置**：Windows 自己在跑动时会写的缓存/历史键。两个引擎是**先后**跑的（相隔数分钟），
+# 期间系统只要新增一条这样的记录，"逐行零差异"就会变成**假红**。
+# 实测事故（CI，main 上 2026-10-05，run 37329666998）：`C:\Program Files` 这条清单命中了
+#   HKCU\Software\Classes\Local Settings\MrtCache\C:%5CProgram Files%5CWindowsApps\…\resources.pri\…
+# 而它是在 pwsh 那次跑完之后、5.1 那次跑之前被系统写进去的 —— 两次相差 1 行（131,397 vs 131,398）。
+# 注意：过滤**只针对这类"系统自己会写"的缓存**；真正的旧路径残留（含 Start\TileProperties 这种）
+# 一律照常参与对比，绝不为了"让它绿"而放宽判据。
+$volatileLocationPatterns = @(
+    '\\Local Settings\\MrtCache\\',        # 资源缓存：随 shell/应用活动随时增删
+    '\\MrtCache\\',
+    '\\MuiCache',                          # 程序显示名缓存
+    '\\Shell\\BagMRU', '\\Shell\\Bags',    # 文件夹视图记忆
+    '\\ShellNoRoam\\',
+    '\\Explorer\\ComDlg32\\',              # 最近打开的对话框路径
+    '\\AppCompatFlags\\',                  # 兼容性标记（系统会自己写）
+    '\\Explorer\\UserAssist',              # 程序启动历史
+    '\\CurrentVersion\\Search\\'           # 搜索历史
+)
+
 # 引擎可启动性自检 —— 与 run-tests.ps1 里那块同一个理由（那边叫 wmh-probe-ok）：
 # **MSIX（Microsoft Store）版 pwsh 被 5.1 启动时是"应用激活"而不是子进程**，重定向会得到 0 字节、
 # $LASTEXITCODE 为空，甚至会直接报 "The requested operation requires elevation"。
@@ -76,16 +95,38 @@ if (-not $env:SLOW_TESTS) {
 
             Test-Case '双引擎：findings.csv 逐行零差异（除容量/体积这类每次都会变的类别）' {
                 $norm = @{}
-                $skipped = @{}
+                $skippedCat = @{}
+                $skippedLoc = @{}
                 foreach ($eng in 'pwsh', 'powershell') {
-                    $kept = @($rows[$eng] | Where-Object { $volatileCategories -notcontains $_.Category })
-                    $skipped[$eng] = $rows[$eng].Count - $kept.Count
+                    $kept = @()
+                    $nCat = 0
+                    $nLoc = 0
+                    foreach ($row in $rows[$eng]) {
+                        if ($volatileCategories -contains $row.Category) { $nCat++; continue }
+                        $hit = $false
+                        foreach ($p in $volatileLocationPatterns) { if ($row.Location -match $p) { $hit = $true; break } }
+                        if ($hit) { $nLoc++; continue }
+                        $kept += $row
+                    }
+                    $skippedCat[$eng] = $nCat
+                    $skippedLoc[$eng] = $nLoc
                     $norm[$eng] = @($kept | ForEach-Object {
                         '{0}|{1}|{2}|{3}|{4}|{5}' -f $_.Severity, $_.Category, $_.Location, $_.Target, $_.Status, $_.Hint
                     } | Sort-Object)
                 }
-                Write-Output ("    参与对比：pwsh {0} 行 / powershell {1} 行；因易变而排除：{2} / {3} 行（类别：{4}）" -f `
-                    $norm['pwsh'].Count, $norm['powershell'].Count, $skipped['pwsh'], $skipped['powershell'], ($volatileCategories -join '、'))
+                Write-Output ("    参与对比：pwsh {0} 行 / powershell {1} 行（原始 {2} / {3}）" -f `
+                    $norm['pwsh'].Count, $norm['powershell'].Count, $rows['pwsh'].Count, $rows['powershell'].Count)
+                Write-Output ("    因易变而排除：类别（{0}）{1} / {2} 行；位置（{3} 类）{4} / {5} 行" -f `
+                    ($volatileCategories -join '、'), $skippedCat['pwsh'], $skippedCat['powershell'],
+                    @($volatileLocationPatterns).Count, $skippedLoc['pwsh'], $skippedLoc['powershell'])
+                # 防线：过滤**不许把报告吃掉**。否则"零差异"会因为两边都空而变成假绿 ——
+                # 这正是本仓库反复吃过的那一类亏（"检查了 0 项却打勾"）。
+                foreach ($eng in 'pwsh', 'powershell') {
+                    Assert-True ($norm[$eng].Count -gt 0) ("{0} 过滤后一行都不剩 —— '零差异'毫无意义" -f $eng)
+                    Assert-True ($norm[$eng].Count -ge ($rows[$eng].Count / 2)) `
+                        ("{0} 的易变过滤吃掉了 {1}/{2} 行（超过一半）—— 过滤范围疑似过宽，会导致假绿" -f `
+                            $eng, ($rows[$eng].Count - $norm[$eng].Count), $rows[$eng].Count)
+                }
                 $diff = @(Compare-Object $norm['pwsh'] $norm['powershell'])
                 if ($diff.Count -gt 0) {
                     $sample = @($diff | Select-Object -First 5 | ForEach-Object {
