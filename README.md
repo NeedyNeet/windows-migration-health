@@ -24,7 +24,7 @@ Windows **「程序位置登记」一致性**工具集：核对并修复那些"�
 | 指标 | 处理前 | 处理后 | 复核方式 |
 |---|---|---|---|
 | 体检"严重"项 | 12 | **7**（全部为有意保留，见下） | 🔒 作者本机：`local/reports/ps51`、`ps7`、`final` 三份 `findings.csv` —— 该目录**已被 gitignore，不在仓库里** |
-| 双引擎一致性 | —— | 同一脚本在 PowerShell **5.1** 与 **7.6** 下结果**逐条相同**（`Compare-Object` 0 差异） | 🔒 作者本机：比对 `local/reports/ps51` 与 `ps7` —— 不在仓库里 |
+| 双引擎一致性 | —— | 同一脚本在 PowerShell **5.1** 与 **7.6** 下结果**逐条相同**（`Compare-Object` 0 差异） | 自动化执行者：[tests/health-check.dualengine.tests.ps1](tests/health-check.dualengine.tests.ps1)（`SLOW_TESTS=1`，CI 上跑：两引擎各跑一次体检后逐行比对 `findings.csv`，本机实测 23,380 行 / 0 差异）；另有作者本机 `local/reports/ps51`、`ps7` 的实测留档（不在仓库里） |
 | 回滚备份 | —— | **545 个 `.reg`**，每条改动前导出 | 🔒 作者本机：`local/rollback/` —— **已被 gitignore，不在仓库里** |
 | 失效文件关联 / 卸载记录 / App Paths / 协议 / 服务 / 命名空间图标 | 213 / 22 / 15 / 14 / 10 / 1 | 0（Adobe 半残留 3 项刻意保留） | ⚠️ 见[案例报告](docs/case-report-d-apps-migration.md)的过程记录 |
 | 修复规模 | —— | 约 **400 个注册表键** + 约 **290 处引用** + 11 处路径改指 | ⚠️ 同上 |
@@ -123,6 +123,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\health-check.ps1  
 
 | 路径 | 内容 |
 |---|---|
+| [CHANGELOG.md](CHANGELOG.md) | **变更记录**：每个版本一个附注 tag；**升级前先看标题带 ⚠ 的那一节**（v2.2 把迁移映射表搬出了脚本） |
 | [scripts/](scripts/) | 现行脚本（3 个 `.ps1` + 3 个 `.cmd` 启动器） |
 | [scripts/dev/fix-encoding.ps1](scripts/dev/fix-encoding.ps1) | **开发工具**：补 BOM、统一 `.cmd` 行尾（默认试运行） |
 | [docs/](docs/README.md) | **文档索引**：四篇文档该看哪篇 |

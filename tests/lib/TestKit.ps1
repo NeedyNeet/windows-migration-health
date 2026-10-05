@@ -58,6 +58,16 @@ function Skip-Test([string]$Name, [string]$Reason) {
 
 function Complete-TestRun([string]$SuiteName) {
     Write-Output ("  {0}: 共 {1} 项检查，{2} 项失败，{3} 项跳过" -f $SuiteName, $script:TkChecks, $script:TkFailures.Count, $script:TkSkips)
+    # **0 项检查 + 0 项跳过 = 这个套件什么都没做。** 实测事故（2026-10-05）：一个套件在
+    # try/finally 里中途出错（跨引擎启动失败），异常没冒到外面，于是它照样打印
+    # "共 0 项检查，0 项失败，0 项跳过" + `##RESULT: PASS` —— 最纯粹的假绿。
+    # 真的一无所获时必须按失败处理（约定 12：检查者自己也会坏）。
+    # 合法的"全跳过"不受影响：那种情况下 TkSkips > 0（跳过是会计数的，见 Skip-Test）。
+    if ($script:TkChecks -eq 0 -and $script:TkSkips -eq 0) {
+        Write-Output '    ! 本套件一项检查都没执行（多半是中途出错）—— 按**失败**处理，绝不当成通过'
+        Write-Output '##RESULT: FAIL'
+        exit 1
+    }
     if ($script:TkFailures.Count -gt 0) {
         $script:TkFailures | ForEach-Object { Write-Output ("    ! " + $_) }
         Write-Output '##RESULT: FAIL'
