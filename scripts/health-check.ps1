@@ -138,7 +138,8 @@ foreach ($r in $clsRoots) {
     if (-not $rk) { continue }
     foreach ($n in $rk.GetSubKeyNames()) {
         [void]$script:progIds.Add($n)
-        if ($n.StartsWith('{')) { $script:clsids.Add($r + '\' + $n) }
+        # 第 6 类（CLSID 外壳扩展）不在这里收集：它们住在 Classes\CLSID 子树里，见下面的
+        # Get-ClsidExtensionKeys。旧实现只挑这一层里以 { 开头的子键，于是第 7 节检查了 0 项却打了勾。
         if ($n -match '^[a-z][a-z0-9\.\-\+]{1,40}$') {          # 协议名基本都长这样
             $ck = $rk.OpenSubKey($n)
             if ($ck) {
@@ -149,6 +150,35 @@ foreach ($r in $clsRoots) {
     }
     $rk.Close()
 }
+# ---- 第 6 类：CLSID 外壳扩展 -------------------------------------------------
+# 收集 Classes\CLSID 子树下的 GUID 键（右键菜单 / 缩略图 / 预览 / shell 扩展都挂在这里）。
+# 刻意接受 -Roots 参数：tests\health-check.clsid.tests.ps1 拿一个临时根键验证"枚举的确实是
+# CLSID 子树" —— 旧实现只挑 Classes 这一层里以 { 开头的子键，而正常机器上几乎没有这种键，
+# 于是第 7 节会打印"✓ 共 0 个 CLSID | 目标均存在"：检查了 0 项的假绿。
+function Get-ClsidExtensionKeys {
+    param([string[]]$Roots)
+    if (-not $Roots) { $Roots = $clsRoots }
+    $found = New-Object System.Collections.Generic.List[string]
+    foreach ($r in $Roots) {
+        $rk = Open-RegKey $r
+        if (-not $rk) { continue }
+        $kids = $rk.OpenSubKey('CLSID')
+        if ($kids) {
+            foreach ($g in $kids.GetSubKeyNames()) {
+                if ($g.StartsWith('{')) { $found.Add($r + '\CLSID\' + $g) }
+            }
+            $kids.Close()
+        }
+        # 兼容：Classes 这一层偶尔也有以 { 命名的键（旧实现只认这些）
+        foreach ($n in $rk.GetSubKeyNames()) {
+            if ($n.StartsWith('{')) { $found.Add($r + '\' + $n) }
+        }
+        $rk.Close()
+    }
+    return $found
+}
+$script:clsids = Get-ClsidExtensionKeys
+
 # 每个 ProgID 的命令/图标只检查一次（多个扩展名常共用同一个 ProgID）
 $script:progCheck = @{}
 function Test-ProgIdTargets([string]$progId) {
@@ -509,29 +539,43 @@ if ($protoBad -eq 0) { W '| ✓ | 全部协议处理程序 | 目标均存在 |' 
 if (-not $SkipClsidScan) {
 Section '7. CLSID 扩展（右键菜单 / 缩略图 / 预览 / shell 扩展）'
 # ============================================================================
-    $clsidBad = 0; $clsidTotal = 0
+    $clsidBad = 0; $clsidTotal = 0; $clsidPrinted = 0
     W '| 状态 | CLSID | 名称 | 指向 |'
     W '|---|---|---|---|'
     foreach ($ck in $script:clsids) {
-        $item = Get-Item -LiteralPath $ck -ErrorAction SilentlyContinue
-        if (-not $item) { continue }
-        $subs = @($item.GetSubKeyNames())
+        # 热点循环用原生 RegistryKey（Open-RegKey）而不是 Get-Item：本机 Classes\CLSID 下有
+        # 1.4 万个键，走 PS provider 慢一个数量级。
+        $rk = Open-RegKey $ck
+        if (-not $rk) { continue }
+        $subs = @($rk.GetSubKeyNames())
         foreach ($sub in 'InprocServer32','InprocServer','LocalServer32') {
             if ($subs -notcontains $sub) { continue }
-            $pk = $ck + '\' + $sub
+            $sk = $rk.OpenSubKey($sub)
+            if (-not $sk) { continue }
             $clsidTotal++
-            $raw = [string](Get-Item -LiteralPath $pk -ErrorAction SilentlyContinue).GetValue('')
+            $raw = [string]$sk.GetValue('')
+            $sk.Close()
             $path = Get-FirstPath $raw
             if (-not $path) { continue }
             if ((Get-Status $path) -eq 'missing') {
                 $clsidBad++
-                $name = [string]$item.GetValue('')
-                W ("| ✗ 不存在 | {0} | {1} | {2} |" -f (Split-Path $ck -Leaf), $name, $path)
-                AddFinding '严重' 'CLSID 扩展' $pk $path ("{0} 的 {1} 指向不存在的文件" -f $(if ($name) { $name } else { Split-Path $ck -Leaf }), $sub) '相关右键菜单/缩略图/预览会失效；卸载残留则删除该 CLSID 键'
+                $name = [string]$rk.GetValue('')
+                # 报告不许被刷屏：明细最多打 40 行，其余只计数（全量在 findings.csv 里）
+                if ($clsidPrinted -lt 40) {
+                    W ("| ✗ 不存在 | {0} | {1} | {2} |" -f (Split-Path $ck -Leaf), $name, $path)
+                    $clsidPrinted++
+                }
+                AddFinding '严重' 'CLSID 扩展' ($ck + '\' + $sub) $path ("{0} 的 {1} 指向不存在的文件" -f $(if ($name) { $name } else { Split-Path $ck -Leaf }), $sub) '相关右键菜单/缩略图/预览会失效；卸载残留则删除该 CLSID 键'
             }
         }
+        $rk.Close()
     }
-    if ($clsidBad -eq 0) { W ("| ✓ | 共 {0} 个 CLSID | — | 目标均存在 |" -f $clsidTotal) }
+    if ($clsidBad -gt $clsidPrinted) { W ("- …另有 {0} 条不再打印（见 findings.csv）" -f ($clsidBad - $clsidPrinted)) }
+    if ($clsidTotal -eq 0) {
+        # 不许假绿：一项都没枚举到时必须明说"没查"，不能打勾
+        W '⚠ **本节未执行有效检查**：一个 CLSID 服务器子键都没枚举到（Classes\CLSID 子树为空或读不到）。'
+        AddFinding '警告' '体检范围' 'Classes\CLSID' 'CLSID 外壳扩展核对未执行有效检查' '未执行检查' '报告里不体现失效的右键菜单/缩略图/预览；**不要**把本节当成"已确认无残留"'
+    } elseif ($clsidBad -eq 0) { W ("| ✓ | 共 {0} 个 CLSID | — | 目标均存在 |" -f $clsidTotal) }
 } else {
     Section '7. CLSID 扩展（右键菜单 / 缩略图 / 预览 / shell 扩展）—— 已跳过'
     W '（本次已用 -SkipClsidScan 跳过 —— **本节没有做任何检查**。）'
