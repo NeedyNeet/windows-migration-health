@@ -1,6 +1,6 @@
 # docs 索引
 
-本目录四篇文档，按"你要做什么"分，不按"我知道什么"分。**每篇都能独立读完，互相只做链接、不复制内容**（例外见「写作约定」第 3 条）。
+本目录六篇文档，按"你要做什么"分，不按"我知道什么"分。**每篇都能独立读完，互相只做链接、不复制内容**（例外见「写作约定」第 3 条）。
 
 **这个项目的主题是「程序位置登记」的一致性**，而"登记指向的东西已经不在了"有**三种**成因：**迁移**（文件搬走了、登记没跟）、**卸载残留**（程序删了、登记没清），以及**写入时就写坏了**（安装器的编码错误把路径写成乱码，登记从第一刻起就是错的）。两者症状相同、核对与修复逻辑也相同，所以四篇文档不按成因分家 —— 指南类文档对三种成因一视同仁。
 
@@ -10,13 +10,15 @@
 | [migration-checklist.md](migration-checklist.md) | 准备搬家（换盘、改路径）的人 | **动手之前**通读；动手时按阶段勾 |
 | [registry-reference.md](registry-reference.md) | 迁移后要修登记、或要改检查脚本的人 | 迁完做复检时；排查"系统认不出程序"时 |
 | [case-report-d-apps-migration.md](case-report-d-apps-migration.md) | 想看完整过程与证据的人 | 想了解"这套规则是怎么总结出来的"、或复核某个结论时 |
+| [design-notes.md](design-notes.md) | 想评估"这些脚本凭什么可信"、或准备改动它们的人 | 读完根 README 之后；或想删掉某段"看起来多余"的检查之前 |
+| [troubleshooting.md](troubleshooting.md) | 跑脚本/测试时觉得"结果不对劲"的人 | 报告写着"未执行有效检查"、某引擎被跳过、`.cmd` 重定向拿不到输出时 |
 
 ## 推荐阅读顺序
 
 1. **只想让磁盘别爆** → 只看 [disk-health.md](disk-health.md)。
 2. **要搬家** → [migration-checklist.md](migration-checklist.md)（含动手前的判断与禁令）→ 迁完按 [registry-reference.md](registry-reference.md) 复检。
 3. **遇到"文件还在但系统认不出程序"**（不管起因是搬家还是卸载残留）→ 直接用仓库脚本 `scripts/health-check.ps1` 体检，再对照 [registry-reference.md](registry-reference.md) 理解它报的每一类是什么。
-4. **想系统了解全貌** → 四篇按上表顺序读，最后看[案例报告](case-report-d-apps-migration.md)（它把 34 条实战踩坑作为附录完整保留）。
+4. **想系统了解全貌** → 上表按顺序读，最后看[案例报告](case-report-d-apps-migration.md)（它把 34 条实战踩坑作为附录完整保留）；**想知道"凭什么信这些脚本"** → [design-notes.md](design-notes.md)（每条设计对应哪次事故、由哪个测试守着）。
 
 ## 与 scripts/ 的关系
 
