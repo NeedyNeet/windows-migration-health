@@ -15,7 +15,9 @@ jobs:
         engine: [pwsh, powershell]
 
     steps:
-      - uses: actions/checkout@v4
+      # v4 基于 Node 20，跑在 Node 24 的 runner 上会报弃用告警（Annotations 里那两条）；
+      # v7 是当前大版本（Node 24）。仍按大版本号引用，跟随官方的安全补丁。
+      - uses: actions/checkout@v7
 
       - name: Show engine versions
         shell: pwsh
