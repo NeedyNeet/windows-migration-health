@@ -55,6 +55,17 @@ function Test-EngineUsable([string]$exe) {
     } catch { return $false }
 }
 
+# 求"只出现在 First 里、不在 Second 里"的行（HashSet 一次遍历，O(n)，两台引擎走同一份 .NET 实现）。
+# 刻意不用 Compare-Object：同规模下它在两台引擎里 0.4 秒的实测，是"两边数组引用相同"的快路径；
+# 而这里要比的是两台引擎各自解析出来的字符串，大输入下的行为不想再赌一次。
+function Get-RowsOnlyInFirst([string[]]$First, [string[]]$Second) {
+    $set = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($x in $First) { [void]$set.Add($x) }
+    $out = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($x in $Second) { if (-not $set.Contains($x)) { $out.Add($x) } }
+    return $out.ToArray()
+}
+
 if (-not $env:SLOW_TESTS) {
     Skip-Test '双引擎：同一份脚本在 5.1 与 7.x 下的 findings.csv 必须零差异' `
         '要真跑两次完整体检（本机实测约 3.7 分钟）；设 $env:SLOW_TESTS=1 启用（CI 上默认启用）'
@@ -100,12 +111,13 @@ if (-not $env:SLOW_TESTS) {
                 if (-not $runDir) { throw ("{0} 没有产出报告目录（自检通过了却跑不起来，属于真失败）" -f $eng) }
                 $csv = Join-Path $runDir.FullName 'findings.csv'
                 if (-not (Test-Path -LiteralPath $csv)) { throw ("{0} 没有 findings.csv" -f $eng) }
+                $childInfo[$eng] | Add-Member -NotePropertyName CsvKb -NotePropertyValue ([math]::Round((Get-Item -LiteralPath $csv).Length / 1KB, 1))
                 $rows[$eng] = @(Import-Csv -LiteralPath $csv -Encoding UTF8)
             }
             # 子进程各自的耗时与输出体积：CI 上判断"慢在哪"就靠这一行（本机实测两边都在 1~2 分钟量级）
-            Write-Output ("    子进程耗时：pwsh {0} 秒（控制台 {1} KB）/ 5.1 {2} 秒（{3} KB）；宿主是 {4}" -f `
-                $childInfo['pwsh'].Seconds, $childInfo['pwsh'].Kb,
-                $childInfo['powershell'].Seconds, $childInfo['powershell'].Kb,
+            Write-Output ("    子进程耗时：pwsh {0} 秒（控制台 {1} KB / findings.csv {2} KB）/ 5.1 {3} 秒（{4} KB / {5} KB）；宿主是 {6}" -f `
+                $childInfo['pwsh'].Seconds, $childInfo['pwsh'].Kb, $childInfo['pwsh'].CsvKb,
+                $childInfo['powershell'].Seconds, $childInfo['powershell'].Kb, $childInfo['powershell'].CsvKb,
                 $(if ($PSVersionTable.PSVersion.Major -ge 7) { 'pwsh' } else { '5.1' }))
 
             Test-Case '双引擎：两次体检都真的产出了发现项（0 行对 0 行不算零差异）' {
@@ -119,21 +131,31 @@ if (-not $env:SLOW_TESTS) {
                 $skippedCat = @{}
                 $skippedLoc = @{}
                 foreach ($eng in 'pwsh', 'powershell') {
-                    $kept = @()
                     $nCat = 0
                     $nLoc = 0
+                    # ⚠ 这一段是**整套测试里最贵的地方**，写法必须讲究（CI 上实测过教训：
+                    #   同一段逻辑在 5.1 宿主下要十几分钟，是"powershell job 21 分钟"的全部来源）。
+                    #   踩过的两种写法：
+                    #     · `$kept += $row` —— 数组追加是二次方复制；
+                    #     · `'{0}|{1}|…' -f …` —— 每行都要做一次格式解析。
+                    #   本机实测（13.1 万行）：`-f` + `+=` 要 **42.7 秒**，换成
+                    #   `List[string].Add` + 字符串连接只要 **4.0 秒**，`.ForEach()` 更到 **1.0 秒**。
+                    #   这里用单次遍历 + List.Add：既过滤又拼签名，不产生中间对象数组。
+                    $sig = New-Object 'System.Collections.Generic.List[string]'
                     foreach ($row in $rows[$eng]) {
                         if ($volatileCategories -contains $row.Category) { $nCat++; continue }
-                        $hit = $false
-                        foreach ($p in $volatileLocationPatterns) { if ($row.Location -match $p) { $hit = $true; break } }
-                        if ($hit) { $nLoc++; continue }
-                        $kept += $row
+                        $loc = [string]$row.Location
+                        $isVol = $false
+                        foreach ($p in $volatileLocationPatterns) { if ($loc -match $p) { $isVol = $true; break } }
+                        if ($isVol) { $nLoc++; continue }
+                        $sig.Add($row.Severity + '|' + $row.Category + '|' + $loc + '|' + $row.Target + '|' + $row.Status + '|' + $row.Hint)
                     }
                     $skippedCat[$eng] = $nCat
                     $skippedLoc[$eng] = $nLoc
-                    $norm[$eng] = @($kept | ForEach-Object {
-                        '{0}|{1}|{2}|{3}|{4}|{5}' -f $_.Severity, $_.Category, $_.Location, $_.Target, $_.Status, $_.Hint
-                    } | Sort-Object)
+                    # 排序用 [Array]::Sort + Ordinal 比较器（两台引擎都走同一份 .NET 实现，行为一致）
+                    $arr = $sig.ToArray()
+                    [Array]::Sort($arr, [StringComparer]::Ordinal)
+                    $norm[$eng] = $arr
                 }
                 Write-Output ("    参与对比：pwsh {0} 行 / powershell {1} 行（原始 {2} / {3}）" -f `
                     $norm['pwsh'].Count, $norm['powershell'].Count, $rows['pwsh'].Count, $rows['powershell'].Count)
@@ -148,12 +170,17 @@ if (-not $env:SLOW_TESTS) {
                         ("{0} 的易变过滤吃掉了 {1}/{2} 行（超过一半）—— 过滤范围疑似过宽，会导致假绿" -f `
                             $eng, ($rows[$eng].Count - $norm[$eng].Count), $rows[$eng].Count)
                 }
-                $diff = @(Compare-Object $norm['pwsh'] $norm['powershell'])
-                if ($diff.Count -gt 0) {
-                    $sample = @($diff | Select-Object -First 5 | ForEach-Object {
-                        "{0} {1}" -f $(if ($_.SideIndicator -eq '<=') { '[仅 pwsh]' } else { '[仅 5.1]' }), $_.InputObject
-                    })
-                    Assert-True ($false) ("两个引擎的结论不一致：{0} 处差异，例如 {1}" -f $diff.Count, ($sample -join ' ;; '))
+                # 差异用 HashSet 一次遍历求（O(n)，两台引擎同一份实现）。
+                # 刻意不用 Compare-Object：同规模下它在该引擎里 0.4 秒是"两边引用相同"的快路径，
+                # 而这里要比的是两台引擎各自解析出来的字符串 —— 不想再赌一次大输入下的行为。
+                $onlyPwsh = @(Get-RowsOnlyInFirst -First $norm['powershell'] -Second $norm['pwsh'])
+                $only51 = @(Get-RowsOnlyInFirst -First $norm['pwsh'] -Second $norm['powershell'])
+                $diffCount = $onlyPwsh.Count + $only51.Count
+                if ($diffCount -gt 0) {
+                    $sample = @()
+                    $sample += @($onlyPwsh | Select-Object -First 3 | ForEach-Object { "[仅 pwsh] $_" })
+                    $sample += @($only51 | Select-Object -First 3 | ForEach-Object { "[仅 5.1] $_" })
+                    Assert-True ($false) ("两个引擎的结论不一致：{0} 处差异，例如 {1}" -f $diffCount, ($sample -join ' ;; '))
                 }
             }
         } finally {
