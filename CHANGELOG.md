@@ -3,7 +3,7 @@
 > 这里只记**会影响使用者**的变更；逐条提交历史见 `git log`，每个版本对应一个**附注 tag**。
 > 老用户升级前**请先读标题带 ⚠ 的那一节**。
 
-## 未发布（下一版）
+## v2.3 —— 2026-10-06
 
 ### 新增：`repair-migrated-apps -DiscoverTargets` —— 空白映射表也能起步
 
@@ -53,7 +53,7 @@ v2.2 把迁移映射表搬进 `local\` 之后，新机器上第一件事是"把�
 `actions/checkout` 从 `v4` 升到 `v7`（v4 面向 Node.js 20，而 runner 已强制 Node.js 24，
 Actions 的 Annotations 里会报弃用告警）。
 
-### 性能：CI 的 `powershell` job 从 21~30 分钟降到 5 分钟量级
+### 性能：CI 的 `powershell` job 从 21~30 分钟降到 **3 分钟量级**
 
 CI 上两个引擎的耗时一直是 4 分钟（pwsh）对 21~30 分钟（powershell），慢的那 19 分钟**全在
 `health-check.dualengine` 这个套件的后处理**上（子进程本身只要 51~109 秒）。真因是套件里那行
@@ -65,9 +65,11 @@ CI 上两个引擎的耗时一直是 4 分钟（pwsh）对 21~30 分钟（powers
 | `-f` + `+=`（原） | 42.7 秒 | **676.4 秒** |
 | 单次遍历 + `List[string].Add` + 字符串连接（现） | 4.0 秒 | **0.5 秒** |
 
-两个引擎 × 676 秒 ≈ 22 分钟，与观测到的 1302 秒吻合。现在过滤与拼签名合成一趟遍历、排序改
-`[Array]::Sort(…, Ordinal)`、差异比较改 HashSet 一次遍历（不再用 `Compare-Object`）。
-顺带修掉了"每次推送触发两个 run"（`push` 与 `pull_request` 各跑一遍）——现在 PR 分支只跑一遍。
+两个引擎 × 676 秒 ≈ 22 分钟，与观测到的 1302 秒吻合。现在拼签名是一趟遍历 + `List.Add` + 字符串连接、
+排序改 `[Array]::Sort(…, Ordinal)`、差异比较改 HashSet 一次遍历（不再用 `Compare-Object`）。
+
+顺带修掉"每次推送触发两个 run"（`push` 与 `pull_request` 各跑一遍），并把套件的清单换成**受控输入**
+（见上面"修复"一节）—— 比较的行数从 13.1 万降到 145，于是最终 `pwsh` **2m58s**、`powershell` **2m18s**。
 
 ### 文档：README 精简、长内容搬进 docs
 
